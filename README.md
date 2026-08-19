@@ -88,6 +88,4 @@ src/main/java/com/novacode/
 └── worktree/     Git Worktree 隔离
 ```
 
-## 📜 License
 
-暂未指定（可在 GitHub 网页端为仓库选择 License 模板）
