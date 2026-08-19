@@ -1,0 +1,45 @@
+package com.novacode.config;
+
+/**
+ * Holds configuration for a single LLM provider.
+ */
+public class ProviderConfig {
+    private String name;
+    private String protocol;
+    private String apiKey;
+    private String model;
+    private String baseUrl;
+    private boolean thinking;
+    /** 上下文窗口 Token 上限（第 8 章）。默认保守值，可经 config.yaml 的 context_window 覆盖。 */
+    private int contextWindow = 64000;
+
+    public ProviderConfig() {}
+
+    public ProviderConfig(String name, String protocol, String apiKey, String model,
+                          String baseUrl, boolean thinking) {
+        this.name = name;
+        this.protocol = protocol;
+        this.apiKey = apiKey;
+        this.model = model;
+        this.baseUrl = baseUrl;
+        this.thinking = thinking;
+    }
+
+    // --- Getters ---
+    public String getName() { return name; }
+    public String getProtocol() { return protocol; }
+    public String getApiKey() { return apiKey; }
+    public String getModel() { return model; }
+    public String getBaseUrl() { return baseUrl; }
+    public boolean isThinking() { return thinking; }
+    public int getContextWindow() { return contextWindow; }
+
+    // --- Setters (needed by SnakeYAML) ---
+    public void setName(String name) { this.name = name; }
+    public void setProtocol(String protocol) { this.protocol = protocol; }
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    public void setModel(String model) { this.model = model; }
+    public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+    public void setThinking(boolean thinking) { this.thinking = thinking; }
+    public void setContextWindow(int contextWindow) { this.contextWindow = contextWindow; }
+}

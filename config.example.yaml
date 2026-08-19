@@ -1,0 +1,17 @@
+# NovaCode Configuration
+# Copy this file to config.yaml and fill in your real API key.
+
+providers:
+  - name: "DeepSeek"
+    protocol: openai-compat
+    api_key: "sk-REPLACE_ME"
+    model: deepseek-v4-flash
+    thinking: false
+    base_url: "https://api.deepseek.com"
+
+  # - name: "OpenAI"
+  #   protocol: openai
+  #   api_key: "${OPENAI_API_KEY}"
+  #   model: "gpt-4o"
+  #   base_url: "https://api.openai.com"
+  #   thinking: false

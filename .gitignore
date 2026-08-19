@@ -1,0 +1,36 @@
+# ── Build output ──────────────────────────────
+target/
+dependency-reduced-pom.xml
+
+# ── Compiled classes outside target/ ─────────
+*.class
+
+# ── Runtime logs ─────────────────────────────
+*.log
+
+# ── Secrets — never commit real API keys ─────
+config.yaml
+
+# ── IDE ───────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+
+# ── NovaCode runtime state ───────────────────
+.novacode/
+
+# ── Claude Code local settings ───────────────
+.claude/settings.local.json
+
+# ── Local scratch / test files ───────────────
+hello.txt
+测试.txt
+
+# ── Local launch scripts (dev machine only) ──
+launch.bat
+launch_direct.bat
+test_launch.bat
+
+# ── OS junk ──────────────────────────────────
+.DS_Store
+Thumbs.db
