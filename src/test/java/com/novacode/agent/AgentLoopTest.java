@@ -111,6 +111,11 @@ class AgentLoopTest {
     }
 
     private RunResult runLoop(FakeClient client, boolean planMode, HookEngine hooks) throws Exception {
+        return runLoop(client, planMode, hooks, a -> {});
+    }
+
+    private RunResult runLoop(FakeClient client, boolean planMode, HookEngine hooks,
+                              java.util.function.Consumer<Agent> tune) throws Exception {
         ToolRegistry registry = ToolRegistry.createDefault();
         var engine = new PermissionEngine(new Blacklist(), new PathSandbox(tempDir),
                 new RuleEngine(), () -> PermissionMode.DEFAULT, null, null);
@@ -118,7 +123,8 @@ class AgentLoopTest {
         cfg.setContextWindow(64_000);
         var cm = new ContextManager(cfg);
         Agent agent = new Agent(client, registry, "openai-compat", engine, cm);
-        agent.setHookEngine(hooks);
+        agent.policy().setHookEngine(hooks);
+        tune.accept(agent);
 
         var history = new ArrayList<ChatMessage>();
         history.add(new ChatMessage(ChatMessage.Role.USER, "开始任务"));
@@ -196,7 +202,7 @@ class AgentLoopTest {
         cfg.setContextWindow(64_000);
         var cm = new ContextManager(cfg);
         Agent agent = new Agent(client, registry, "openai-compat", engine, cm);
-        agent.setMaxIterations(2);
+        agent.policy().setMaxIterations(2);
 
         var history = new ArrayList<ChatMessage>();
         history.add(new ChatMessage(ChatMessage.Role.USER, "loop"));
@@ -288,6 +294,41 @@ class AgentLoopTest {
         assertFalse(result.historyText().contains("内容"), "被拦截的读不应执行")
         ;
         assertTrue(client.requests.size() == 2, "拒绝后循环继续");
+    }
+
+    @Test
+    void naturalStopFiresPolicyCallbackWithHistorySnapshot() throws Exception {
+        // 回调在 LoopComplete 事件之后异步触发（设计如此：不阻塞循环收尾），
+        // 用 latch 等待回调完成，避免与断言竞速。
+        var latch = new java.util.concurrent.CountDownLatch(1);
+        var received = new java.util.ArrayList<ChatMessage>();
+        var client = new FakeClient(Scripted.text("完成"));
+
+        runLoop(client, false, null, a -> a.policy().setOnNaturalStop(h -> {
+            received.addAll(h);
+            latch.countDown();
+        }));
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS), "自然停止回调应在 5 秒内触发");
+        assertEquals(2, received.size(), "自然停止应把完整 history 快照交给回调");
+        assertEquals("开始任务", received.get(0).getContent());
+        assertEquals("完成", received.get(1).getContent());
+    }
+
+    @Test
+    void policyResetSemantics() {
+        var p = new LoopPolicy();
+        assertEquals(LoopPolicy.DEFAULT_MAX_ITERATIONS, p.getMaxIterations());
+
+        p.setMaxIterations(-3);
+        assertEquals(LoopPolicy.DEFAULT_MAX_ITERATIONS, p.getMaxIterations(), "非正复位默认");
+        p.setMaxIterations(7);
+        assertEquals(7, p.getMaxIterations());
+
+        p.setToolWhitelist(null);
+        assertTrue(p.getToolWhitelist().isEmpty(), "null 白名单复位为全工具");
+        p.setToolWhitelist(java.util.Set.of("ReadFile"));
+        assertEquals(java.util.Set.of("ReadFile"), p.getToolWhitelist());
     }
 
     @Test
