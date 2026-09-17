@@ -63,14 +63,49 @@ public class App {
             return;
         }
 
-        // Use the first provider (multi-provider selection is future work)
-        ProviderConfig cfg = providers.get(0);
+        // Use the selected provider (default: first; --provider <name|index> to choose)
+        ProviderConfig cfg = selectProvider(providers, args);
 
         // 第 15 章 F7：coordinator 能力开关（与环境变量双锁判定在 ChatModel 内完成）。
         boolean coordinatorEnabled = ConfigLoader.coordinatorEnabled(configPath);
-        ChatModel model = new ChatModel(cfg, coordinatorEnabled);
+        ChatModel model = new ChatModel(cfg, coordinatorEnabled, configPath);
         Program program = new Program(model);
         program.run();
+    }
+
+    /** {@code --provider <name|index>}：按名称（忽略大小写/前缀）或 1 基下标选择 provider；
+     *  缺省用第一个。找不到时列出可用项并退出。包私有以便测试。 */
+    static ProviderConfig selectProvider(List<ProviderConfig> providers, String[] args) {
+        String wanted = argValue(args, "--provider");
+        if (wanted == null || wanted.isBlank()) return providers.get(0);
+        ProviderConfig resolved = resolveProvider(providers, wanted);
+        if (resolved != null) return resolved;
+
+        System.err.println("Provider not found: " + wanted + ". Available providers:");
+        for (int i = 0; i < providers.size(); i++) {
+            ProviderConfig p = providers.get(i);
+            System.err.println("  " + (i + 1) + ". " + p.getName()
+                    + " (" + p.getProtocol() + " · " + p.getModel() + ")");
+        }
+        System.exit(1);
+        return providers.get(0); // unreachable
+    }
+
+    /** 按名称精确 / 唯一前缀 / 1 基下标解析 provider；找不到返回 null（公共：/model 复用）。 */
+    public static ProviderConfig resolveProvider(List<ProviderConfig> providers, String wanted) {
+        for (ProviderConfig p : providers) {
+            if (p.getName().equalsIgnoreCase(wanted)) return p;
+        }
+        List<ProviderConfig> byPrefix = providers.stream()
+                .filter(p -> p.getName().toLowerCase().startsWith(wanted.toLowerCase()))
+                .toList();
+        if (byPrefix.size() == 1) return byPrefix.get(0);
+        try {
+            int idx = Integer.parseInt(wanted);
+            if (idx >= 1 && idx <= providers.size()) return providers.get(idx - 1);
+        } catch (NumberFormatException ignored) {
+        }
+        return null;
     }
 
     /** 窗格队员入口：从磁盘重建团队，以指定成员身份跑邮箱驱动循环（第 15 章 F2/F6）。 */

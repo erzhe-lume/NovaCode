@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "NovaCode Architecture",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1100, 540],
+    "views": [
+      {
+        "id": "main-loop",
+        "label": "Agent Loop 主链路",
+        "focus": ["chatmodel", "agent", "llm", "tools", "permission"],
+        "note": "从用户输入到 LLM 流式调用、工具执行、权限拦截的主数据通路。"
+      },
+      {
+        "id": "memory-context",
+        "label": "记忆与上下文",
+        "focus": ["agent", "context", "memory", "session"],
+        "note": "上下文两层压缩 + 跨会话记忆沉淀 + 会话持久化。"
+      },
+      {
+        "id": "extensions",
+        "label": "扩展机制",
+        "focus": ["skill", "teams", "mcp", "hook"],
+        "note": "Skill / SubAgent / Teams / MCP / Hook 四大可插拔扩展点。"
+      }
+    ]
+  },
+  "components": [
+    { "id": "chatmodel", "type": "frontend", "label": "ChatModel", "sublabel": "TUI + Elm 架构", "pos": [430, 30], "size": [150, 56], "tag": "交互层" },
+    { "id": "commands", "type": "frontend", "label": "CommandRegistry", "sublabel": "Slash 命令", "pos": [850, 30], "size": [170, 56], "tag": "交互层" },
+
+    { "id": "llm", "type": "backend", "label": "LlmClient", "sublabel": "Anthropic / OpenAI", "pos": [180, 130], "size": [150, 56], "tag": "引擎层" },
+    { "id": "agent", "type": "backend", "label": "Agent", "sublabel": "ReAct Loop", "pos": [430, 130], "size": [150, 56], "tag": "引擎层" },
+    { "id": "prompt", "type": "backend", "label": "PromptBuilder", "sublabel": "每轮重建", "pos": [700, 130], "size": [160, 56], "tag": "引擎层" },
+
+    { "id": "tools", "type": "backend", "label": "ToolRegistry", "sublabel": "6 内置工具", "pos": [100, 230], "size": [190, 56], "tag": "工具层" },
+    { "id": "hook", "type": "backend", "label": "HookEngine", "sublabel": "15 生命周期事件", "pos": [650, 230], "size": [150, 56], "tag": "工具层" },
+    { "id": "mcp", "type": "external", "label": "McpManager", "sublabel": "stdio / HTTP", "pos": [850, 230], "size": [150, 56], "tag": "工具层" },
+
+    { "id": "context", "type": "database", "label": "ContextManager", "sublabel": "两层压缩 + 熔断", "pos": [100, 330], "size": [190, 56], "tag": "记忆层" },
+    { "id": "memory", "type": "database", "label": "MemoryManager", "sublabel": "四类两级笔记", "pos": [320, 330], "size": [170, 56], "tag": "记忆层" },
+    { "id": "session", "type": "database", "label": "SessionStore", "sublabel": "JSONL 持久化", "pos": [650, 330], "size": [170, 56], "tag": "记忆层" },
+
+    { "id": "permission", "type": "security", "label": "PermissionEngine", "sublabel": "黑名单→沙箱→规则→模式→HITL", "pos": [355, 430], "size": [300, 56], "tag": "安全层" },
+
+    { "id": "skill", "type": "backend", "label": "Skill + SubAgent", "sublabel": "可插拔 + 委派隔离", "pos": [900, 130], "size": [170, 56], "tag": "扩展" },
+    { "id": "teams", "type": "backend", "label": "Teams + Worktree", "sublabel": "邮箱协作 + Git 隔离", "pos": [900, 330], "size": [170, 56], "tag": "扩展" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "交互层", "wraps": ["chatmodel", "commands"], "pad": 16 },
+    { "kind": "region", "label": "引擎层", "wraps": ["llm", "agent", "prompt"], "pad": 16 },
+    { "kind": "region", "label": "工具层", "wraps": ["tools", "hook", "mcp"], "pad": 16 },
+    { "kind": "region", "label": "记忆层", "wraps": ["context", "memory", "session"], "pad": 16 },
+    { "kind": "security-group", "label": "安全层（贯穿全层）", "wraps": ["permission"], "pad": 16 }
+  ],
+  "connections": [
+    { "id": "c-agent", "from": "chatmodel", "to": "agent", "label": "history + prompt", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelDy": 46 },
+    { "id": "c-cmd", "from": "chatmodel", "to": "commands", "label": "slash" },
+    { "id": "c-llm", "from": "agent", "to": "llm", "label": "stream", "variant": "emphasis" },
+    { "id": "c-prompt", "from": "prompt", "to": "chatmodel", "label": "system prompt", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "labelDy": -20 },
+    { "id": "c-tools", "from": "agent", "to": "tools", "label": "execute", "fromSide": "bottom", "toSide": "top" },
+    { "id": "c-hook", "from": "agent", "to": "hook", "label": "fire events", "fromSide": "bottom", "toSide": "top" },
+    { "id": "c-perm", "from": "agent", "to": "permission", "label": "decide", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelDy": 60 }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "五层架构",
+      "items": [
+        "交互层：TUI Elm 架构 + Slash 命令 + ChatModel",
+        "引擎层：ReAct Agent Loop + 多协议 LLM 客户端",
+        "工具层：6 内置工具 + MCP 远程 + 15 生命周期 Hook"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "记忆与安全",
+      "items": [
+        "记忆层：ContextManager 两层压缩（存盘+摘要）+ MemoryManager 四类笔记",
+        "安全层：PermissionEngine 五层管线 deny 恒优先，SessionStore JSONL 持久化"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "可插拔扩展",
+      "items": [
+        "Skill：行为可插拔，shared 激活 / independent 独立执行",
+        "SubAgent：上下文隔离委派 + Git Worktree 文件隔离",
+        "Teams：邮箱通信 + Coordinator 统筹调度"
+      ]
+    }
+  ]
+}

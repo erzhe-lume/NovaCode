@@ -8,6 +8,7 @@ import com.novacode.config.ProviderConfig;
 import com.novacode.model.ChatMessage;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -27,13 +28,13 @@ public class OpenAiCompatClient implements LlmClient {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /** DeepSeek / OpenAI-compat standard ceiling. Explicit so the truncation boundary is predictable. */
-    private static final int MAX_TOKENS = 4096;
+    private static final int MAX_RETRIES = 3;
 
     private final HttpClient httpClient;
     private final String baseUrl;
     private final String apiKey;
     private final String model;
+    private final int maxTokens;
     private final String systemPrompt;
     private List<Map<String, Object>> tools = List.of();
 
@@ -41,6 +42,7 @@ public class OpenAiCompatClient implements LlmClient {
         this.apiKey = cfg.getApiKey();
         this.baseUrl = cfg.getBaseUrl().replaceAll("/+$", "");
         this.model = cfg.getModel();
+        this.maxTokens = Math.max(1024, cfg.getMaxTokens());
         this.systemPrompt = systemPrompt;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
@@ -82,8 +84,23 @@ public class OpenAiCompatClient implements LlmClient {
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
-        HttpResponse<java.io.InputStream> response = httpClient.send(
-                request, HttpResponse.BodyHandlers.ofInputStream());
+        // 429/5xx/连接失败：指数退避重试（1s/2s/4s），瞬态错误不再中断整个任务。
+        HttpResponse<java.io.InputStream> response = null;
+        IOException lastIo = null;
+        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            if (attempt > 0) Thread.sleep(1000L * (1L << (attempt - 1)));
+            try {
+                response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            } catch (IOException e) {
+                lastIo = e;
+                continue;
+            }
+            if (response.statusCode() == 200 || !retryableStatus(response.statusCode())) break;
+            try (var is = response.body()) { is.readAllBytes(); } // 排干错误体
+        }
+        if (response == null) {
+            throw lastIo != null ? lastIo : new IOException("request failed after retries");
+        }
 
         int status = response.statusCode();
         if (status != 200) {
@@ -140,7 +157,7 @@ public class OpenAiCompatClient implements LlmClient {
         }
     }
 
-    private boolean handleSseData(String data, BlockingQueue<StreamEvent> queue,
+    boolean handleSseData(String data, BlockingQueue<StreamEvent> queue,
                                    Map<Integer, StringBuilder> toolNames,
                                    Map<Integer, StringBuilder> toolArgs,
                                    Map<Integer, String> toolIds,
@@ -159,25 +176,8 @@ public class OpenAiCompatClient implements LlmClient {
             return false;
         }
 
-        JsonNode choices = root.path("choices");
-        if (!choices.isArray() || choices.isEmpty()) return false;
-
-        JsonNode choice = choices.get(0);
-        JsonNode delta = choice.path("delta");
-
-        // text content
-        if (delta.has("content") && !delta.get("content").isNull()) {
-            String text = delta.get("content").asText();
-            if (!text.isEmpty()) queue.put(new StreamEvent.TextDelta(text));
-        }
-
-        // reasoning_content (DeepSeek) → discard as thinking
-        if (delta.has("reasoning_content") && !delta.get("reasoning_content").isNull()) {
-            String rc = delta.get("reasoning_content").asText();
-            if (!rc.isEmpty()) queue.put(new StreamEvent.ThinkingDelta(rc));
-        }
-
-        // usage (DeepSeek / OpenAI compatible — appears in last chunk)
+        // usage 独立于 choices 解析 —— stream_options.include_usage 的收尾块
+        // choices 为空数组，提前 return 会丢掉整次统计
         if (root.has("usage") && !root.get("usage").isNull()) {
             JsonNode usage = root.get("usage");
             if (usage.has("prompt_tokens"))
@@ -203,6 +203,24 @@ public class OpenAiCompatClient implements LlmClient {
                         usageCacheRead[0], usageCacheWrite[0]));
                 usageEmitted[0] = true;
             }
+        }
+
+        JsonNode choices = root.path("choices");
+        if (!choices.isArray() || choices.isEmpty()) return false;
+
+        JsonNode choice = choices.get(0);
+        JsonNode delta = choice.path("delta");
+
+        // text content
+        if (delta.has("content") && !delta.get("content").isNull()) {
+            String text = delta.get("content").asText();
+            if (!text.isEmpty()) queue.put(new StreamEvent.TextDelta(text));
+        }
+
+        // reasoning_content (DeepSeek) → discard as thinking
+        if (delta.has("reasoning_content") && !delta.get("reasoning_content").isNull()) {
+            String rc = delta.get("reasoning_content").asText();
+            if (!rc.isEmpty()) queue.put(new StreamEvent.ThinkingDelta(rc));
         }
 
         // tool_calls
@@ -260,12 +278,12 @@ public class OpenAiCompatClient implements LlmClient {
         toolNames.clear(); toolArgs.clear(); toolIds.clear();
     }
 
-    private String buildRequestBody(List<ChatMessage> history, String prompt,
-                                      List<Map<String, Object>> toolsList) throws Exception {
+    String buildRequestBody(List<ChatMessage> history, String prompt,
+                              List<Map<String, Object>> toolsList) throws Exception {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("model", model);
         root.put("stream", true);
-        root.put("max_tokens", MAX_TOKENS);
+        root.put("max_tokens", maxTokens);
 
         ArrayNode msgs = MAPPER.createArrayNode();
         if (prompt != null && !prompt.isBlank()) {
@@ -318,5 +336,10 @@ public class OpenAiCompatClient implements LlmClient {
         }
 
         return MAPPER.writeValueAsString(root);
+    }
+
+    /** 429/408/5xx 视为瞬态，可重试。包私有以便测试。 */
+    static boolean retryableStatus(int code) {
+        return code == 408 || code == 429 || code == 529 || (code >= 500 && code <= 599);
     }
 }

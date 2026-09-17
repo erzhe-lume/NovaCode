@@ -20,6 +20,16 @@ public final class BuiltinCommands {
 
     private BuiltinCommands() {}
 
+    /** 缓存命中率片段（协议感知，与 ChatModel.cacheRateSuffix 同一套口径）。 */
+    private static String cacheRate(ProviderConfig cfg, CommandContext.TokenStats t) {
+        if (t.cacheRead() <= 0) return "";
+        long denom = "anthropic".equals(cfg.getProtocol())
+                ? (long) t.inputTokens() + t.cacheRead() + t.cacheWrite()
+                : (long) t.inputTokens();
+        if (denom <= 0) return "";
+        return "（命中率 " + Math.round(100.0 * t.cacheRead() / denom) + "%）";
+    }
+
     public static CommandRegistry build(ContextManager cm, SessionStore ss,
                                         MemoryManager mm, PermissionConfig pc,
                                         ProviderConfig cfg) {
@@ -43,7 +53,8 @@ public final class BuiltinCommands {
                     c.display("  模型: " + cfg.getModel());
                     c.display("  会话: " + ss.currentId());
                     c.display("  Token: ↑" + t.inputTokens() + " ↓" + t.outputTokens()
-                            + " · cache读 " + t.cacheRead() + " / 写 " + t.cacheWrite());
+                            + " · cache读 " + t.cacheRead() + " / 写 " + t.cacheWrite()
+                            + cacheRate(cfg, t));
                     c.display("  上下文: ~" + t.contextTokens() + " / " + t.contextWindow() + " tok");
                 }));
 
@@ -64,20 +75,35 @@ public final class BuiltinCommands {
                     c.display("── 已进入计划模式（只读工具）──");
                 }));
 
-        registry.register(CommandSpec.of("session", "列出历史会话", "/session",
-                CommandType.UI_STATE, null, false, (c, args) -> {
+        registry.register(CommandSpec.of("session", "列出历史会话（/session rm <id前缀> 删除）", "/session",
+                CommandType.UI_STATE, "[rm <id前缀>]", false, (c, args) -> {
+                    String trimmed = args == null ? "" : args.trim();
+                    if (trimmed.toLowerCase().startsWith("rm ")) {
+                        SessionStore.DeleteResult r = ss.deleteById(trimmed.substring(3).trim());
+                        c.display("── " + r.message() + (r.ok() ? "" : "（未删除）") + " ──");
+                        return;
+                    }
                     List<SessionStore.SessionInfo> sessions = ss.list();
                     if (sessions.isEmpty()) {
                         c.display("── 没有历史会话 ──");
                     } else {
-                        c.display("── 历史会话（最近在前）──");
+                        c.display("── 历史会话（最近在前，/resume <id前缀> 切换，/session rm <id前缀> 删除）──");
                         for (SessionStore.SessionInfo s : sessions) {
                             String title = s.firstMessage();
                             if (title.length() > 40) title = title.substring(0, 40) + "…";
-                            c.display("  " + s.id() + " · " + s.messageCount() + " 条 · " + title);
+                            boolean current = s.id().equals(ss.currentId());
+                            c.display("  " + s.id() + (current ? " ← 当前" : "")
+                                    + " · " + s.messageCount() + " 条 · " + title);
                         }
                     }
                 }, "sessions"));
+
+        registry.register(CommandSpec.of("model", "列出或切换 LLM provider", "/model",
+                CommandType.UI_STATE, "[名称|序号]", false, (c, args) -> {
+                    String trimmed = args == null ? "" : args.trim();
+                    String result = trimmed.isEmpty() ? c.modelList() : c.switchModel(trimmed);
+                    c.display("── " + result + " ──");
+                }));
 
         registry.register(CommandSpec.of("memory", "显示当前记忆索引", "/memory",
                 CommandType.UI_STATE, null, false, (c, args) -> {
@@ -101,6 +127,29 @@ public final class BuiltinCommands {
                         }
                     }
                 }, "perm"));
+
+        registry.register(CommandSpec.of("resume", "切换到历史会话（无参数列出）", "/resume",
+                CommandType.UI_STATE, "[id前缀]", false, (c, args) -> {
+                    if (args == null || args.isBlank()) {
+                        List<SessionStore.SessionInfo> sessions = ss.list();
+                        if (sessions.isEmpty()) {
+                            c.display("── 没有历史会话 ──");
+                            return;
+                        }
+                        c.display("── 历史会话（用 /resume <id前缀> 切换）──");
+                        int shown = Math.min(sessions.size(), 8);
+                        for (int i = 0; i < shown; i++) {
+                            SessionStore.SessionInfo s = sessions.get(i);
+                            String title = s.firstMessage();
+                            if (title.length() > 36) title = title.substring(0, 36) + "…";
+                            boolean current = s.id().equals(ss.currentId());
+                            c.display("  " + s.id() + (current ? " ← 当前" : "")
+                                    + " · " + s.messageCount() + " 条 · " + title);
+                        }
+                        return;
+                    }
+                    c.display("── " + c.resumeSession(args.trim()) + " ──");
+                }));
 
         registry.register(CommandSpec.of("new", "开新会话（清空对话历史）", "/new",
                 CommandType.UI_STATE, null, false, (c, args) ->

@@ -20,7 +20,9 @@ public class WriteFileTool implements Tool {
     @Override public String description() {
         return "Write content to a file, creating parent directories. Overwrites existing files. "
                 + "Always use this instead of echo/cat heredoc via Bash. "
-                + "If the file already exists, read it with ReadFile first before overwriting.";
+                + "If the file already exists, read it with ReadFile first before overwriting. "
+                + "Prefer EditFile for changing existing files (smaller, safer diff); "
+                + "use WriteFile for new files or full rewrites.";
     }
 
     @Override

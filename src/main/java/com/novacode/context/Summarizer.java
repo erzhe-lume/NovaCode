@@ -41,10 +41,15 @@ public class Summarizer {
             注意：已存盘的工具结果在对话里只有预览和文件路径，摘要里只需记录其位置和要点，不要臆测完整内容。
             """;
 
-    private final LlmClient client;
+    private LlmClient client;
 
     public Summarizer(ProviderConfig config) {
         // 独立客户端，不 setTools —— 无工具可调（F5）
+        this.client = LlmClient.create(config, null);
+    }
+
+    /** /model 切换后重建摘要客户端，跟随主 provider。 */
+    public void switchProvider(ProviderConfig config) {
         this.client = LlmClient.create(config, null);
     }
 

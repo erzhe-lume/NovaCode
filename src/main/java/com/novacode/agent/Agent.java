@@ -47,7 +47,7 @@ public class Agent {
             java.nio.file.Path.of(System.getProperty("user.dir"),
                     ".novacode", "plans", "plan.md").toString();
 
-    private final LlmClient client;
+    private LlmClient client;
     private final ToolRegistry registry;
     private final String protocol;
     private final PermissionEngine permissionEngine;
@@ -108,6 +108,11 @@ public class Agent {
     /** 设置 hook 引擎（第 12 章）；可为 null（关闭 hook）。 */
     public void setHookEngine(HookEngine hookEngine) {
         this.hookEngine = hookEngine;
+    }
+
+    /** 运行时切换 LLM 客户端（/model 换 provider）；仅在循环空闲时调用。 */
+    public void setClient(LlmClient newClient) {
+        this.client = newClient;
     }
 
     // ── Public API ───────────────────────────────────────────────────────
@@ -172,6 +177,7 @@ public class Agent {
 
         int unknownRun = 0;
         boolean loopCompleted = false;
+        String earlyStop = null; // 非 null = 因取消/流错误提前退出，不能误报"迭代上限"
 
         try {
             int cap = maxIterations;
@@ -179,7 +185,7 @@ public class Agent {
 
                 // ── check interrupt ──────────────────────────────────
                 if (Thread.currentThread().isInterrupted()) {
-                    ensureAssistantTail(history, "（已取消）");
+                    earlyStop = "（已取消）";
                     break;
                 }
 
@@ -206,7 +212,10 @@ public class Agent {
 
                 // ── 第 8 章：上下文管理。每次请求前先预防层存盘，再判断兜底压缩（F10）──
                 String ctxStatus = contextManager.prepareBeforeRequest(history);
-                if (!ctxStatus.isEmpty() && !emit(queue, new AgentEvent.Notice(ctxStatus))) break;
+                if (!ctxStatus.isEmpty() && !emit(queue, new AgentEvent.Notice(ctxStatus))) {
+                    earlyStop = "（已取消）";
+                    break;
+                }
 
                 // ── plan mode: inject reminder per iteration (F6/F7) ──
                 // 追加到本轮 history（user 角色，XML 包裹），仅在本次 LLM 调用期间可见：
@@ -235,7 +244,10 @@ public class Agent {
                 }
 
                 // ── emit progress ────────────────────────────────────
-                if (!emit(queue, new AgentEvent.TurnComplete(iter))) break;
+                if (!emit(queue, new AgentEvent.TurnComplete(iter))) {
+                    earlyStop = "（已取消）";
+                    break;
+                }
 
                 // ── hook: pre_send（发送前）──
                 fireHook(HookEvent.PRE_SEND, null, null, null, userMsg, null);
@@ -249,7 +261,10 @@ public class Agent {
                     if (coordinatorReminder != null) history.remove(coordinatorReminder);
                     if (hookReminder != null) history.remove(hookReminder);
                 }
-                if (result == null) break; // stream error
+                if (result == null) {
+                    earlyStop = "（请求失败）";
+                    break; // stream error
+                }
 
                 // ── hook: post_receive（接收后）──
                 fireHook(HookEvent.POST_RECEIVE, null, null, null, result.text, null);
@@ -266,7 +281,10 @@ public class Agent {
                 if (result.usageInput > 0 || result.usageOutput > 0) {
                     if (!emit(queue, new AgentEvent.UsageEvent(
                             result.usageInput, result.usageOutput,
-                            result.usageCacheRead, result.usageCacheWrite))) break;
+                            result.usageCacheRead, result.usageCacheWrite))) {
+                        earlyStop = "（已取消）";
+                        break;
+                    }
                 }
 
                 // ── no tool calls → natural completion ───────────────
@@ -328,6 +346,13 @@ public class Agent {
                 fireHook(HookEvent.TURN_END, null, null, null, null, null);
 
                 // ── continue to next iteration ────────────────────────
+            }
+
+            // 提前退出（取消/流错误）：真实原因已通过事件上报，这里只补齐历史尾部，
+            // 不能误报"迭代上限"。
+            if (earlyStop != null) {
+                ensureAssistantTail(history, earlyStop);
+                return;
             }
 
             // Hit iteration cap

@@ -123,17 +123,22 @@ public class SessionStore {
 
     // ── 恢复 ─────────────────────────────────────────────────────────────
 
-    /** 找最新的会话文件并加载恢复。无文件或空返回 {@code found=false}。 */
+    /** 找最新的会话文件并加载恢复。无文件或空返回 {@code found=false}。
+     *  mtime 打平时按会话 ID（内含时间戳）取较大者，保证同粒度创建时恢复最新的。 */
     public ResumeResult resumeMostRecent() {
         Path latest = null;
         long latestMtime = -1;
+        String latestName = "";
         try (Stream<Path> paths = Files.list(sessionsDir)) {
             for (Path p : paths.toList()) {
                 if (!p.toString().endsWith(".jsonl") || !Files.isRegularFile(p)) continue;
                 long mtime = Files.getLastModifiedTime(p).toMillis();
-                if (mtime > latestMtime) {
+                String name = p.getFileName().toString();
+                if (mtime > latestMtime
+                        || (mtime == latestMtime && name.compareTo(latestName) > 0)) {
                     latestMtime = mtime;
                     latest = p;
+                    latestName = name;
                 }
             }
         } catch (IOException ignored) {
@@ -152,6 +157,38 @@ public class SessionStore {
         currentId = id;
         writtenCount = loaded.messages().size();
         return new ResumeResult(true, id, loaded.messages(), lastTs);
+    }
+
+    /** 按 ID（或 ID 前缀）恢复会话（/resume <id>）。找不到或为空返回 {@code found=false}。 */
+    public ResumeResult resumeById(String idPrefix) {
+        if (idPrefix == null || idPrefix.isBlank()) {
+            return new ResumeResult(false, null, List.of(), 0L);
+        }
+        Path file = null;
+        try (Stream<Path> paths = Files.list(sessionsDir)) {
+            List<Path> candidates = paths
+                    .filter(p -> p.getFileName().toString().endsWith(".jsonl"))
+                    .filter(Files::isRegularFile)
+                    .sorted()
+                    .toList();
+            for (Path p : candidates) {
+                String base = p.getFileName().toString()
+                        .substring(0, p.getFileName().toString().length() - ".jsonl".length());
+                if (base.equals(idPrefix)) { file = p; break; }        // 精确匹配优先
+                if (file == null && base.startsWith(idPrefix)) file = p; // 否则取字典序最小的前缀匹配
+            }
+        } catch (IOException ignored) {
+            return new ResumeResult(false, null, List.of(), 0L);
+        }
+        if (file == null) return new ResumeResult(false, null, List.of(), 0L);
+
+        LoadResult loaded = loadWithTs(file);
+        if (loaded.messages().isEmpty()) return new ResumeResult(false, null, List.of(), 0L);
+        String resolvedId = file.getFileName().toString()
+                .substring(0, file.getFileName().toString().length() - ".jsonl".length());
+        currentId = resolvedId;
+        writtenCount = loaded.messages().size();
+        return new ResumeResult(true, resolvedId, loaded.messages(), loaded.lastTs());
     }
 
     /** 读取一个会话文件，恢复为消息列表（坏行跳过、缺口截断）。 */
@@ -257,6 +294,49 @@ public class SessionStore {
 
     // ── 清理 ─────────────────────────────────────────────────────────────
 
+    /** 删除结果：ok=false 时 message 说明原因（找不到/不唯一/当前会话）。 */
+    public record DeleteResult(boolean ok, String message) {}
+
+    /** 删除 ID（或前缀）匹配的会话文件。要求恰好匹配一个、且不是当前会话。 */
+    public DeleteResult deleteById(String idPrefix) {
+        if (idPrefix == null || idPrefix.isBlank()) {
+            return new DeleteResult(false, "缺少会话 ID 前缀");
+        }
+        List<Path> matches = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        try (Stream<Path> paths = Files.list(sessionsDir)) {
+            for (Path p : paths
+                    .filter(p -> p.getFileName().toString().endsWith(".jsonl"))
+                    .filter(Files::isRegularFile)
+                    .sorted()
+                    .toList()) {
+                String base = p.getFileName().toString()
+                        .substring(0, p.getFileName().toString().length() - ".jsonl".length());
+                if (base.equals(idPrefix) || base.startsWith(idPrefix)) {
+                    matches.add(p);
+                    ids.add(base);
+                }
+            }
+        } catch (IOException e) {
+            return new DeleteResult(false, "扫描会话目录失败");
+        }
+        if (matches.isEmpty()) return new DeleteResult(false, "没有匹配 " + idPrefix + " 的会话");
+        if (matches.size() > 1) {
+            return new DeleteResult(false, "前缀匹配到 " + matches.size() + " 个会话，请用更长的 ID（如 "
+                    + ids.get(0) + "）");
+        }
+        String id = ids.get(0);
+        if (id.equals(currentId)) {
+            return new DeleteResult(false, "不能删除当前会话（先 /new 或 /resume 切走）");
+        }
+        try {
+            Files.deleteIfExists(matches.get(0));
+            return new DeleteResult(true, "已删除会话 " + id);
+        } catch (IOException e) {
+            return new DeleteResult(false, "删除失败: " + e.getMessage());
+        }
+    }
+
     /** 删除 mtime 超过 30 天的会话文件。 */
     public void cleanExpired() {
         if (!Files.isDirectory(sessionsDir)) return;
@@ -304,7 +384,8 @@ public class SessionStore {
         } catch (IOException ignored) {
             return List.of();
         }
-        out.sort(Comparator.comparingLong(SessionInfo::modTime).reversed());
+        out.sort(Comparator.comparingLong(SessionInfo::modTime).reversed()
+                .thenComparing(SessionInfo::id, Comparator.reverseOrder()));
         return out;
     }
 }

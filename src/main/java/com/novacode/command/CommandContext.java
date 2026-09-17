@@ -44,6 +44,21 @@ public interface CommandContext {
     /** 调用一个 Skill（第 11 章）：shared 激活并触发 Agent；independent 独立执行回流摘要。 */
     void invokeSkill(String name, String args);
 
+    /** 切换到历史会话（/resume <id前缀>）：替换当前对话历史并渲染，返回人类可读状态。 */
+    default String resumeSession(String idPrefix) {
+        throw new UnsupportedOperationException("resume not supported by this context");
+    }
+
+    /** /model <名称|序号>：运行时切换 provider（空闲时），返回人类可读状态。 */
+    default String switchModel(String selector) {
+        throw new UnsupportedOperationException("model switch not supported by this context");
+    }
+
+    /** /model：列出配置中的全部 provider 与当前选中项。 */
+    default String modelList() {
+        return "";
+    }
+
     /** 累计 Token 与上下文估算（spec F4「查 Token」）。 */
     record TokenStats(int inputTokens, int outputTokens,
                       int cacheRead, int cacheWrite,

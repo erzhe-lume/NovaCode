@@ -34,3 +34,11 @@ test_launch.bat
 # ── OS junk ──────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# NovaCode 运行时数据
+.mewcode/
+.novacode/
+nova_cache.log
+nova_crash.log
+nova_error.log
+nova_launch.log

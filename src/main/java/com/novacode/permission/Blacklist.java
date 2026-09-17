@@ -43,6 +43,12 @@ public class Blacklist {
         // Windows: rd /s /q C:\  or  C:\*  (whole-drive recursive delete)
         regex("Windows 整盘删除",
             "(?i)\\b(?:rd|rmdir)\\b[^\\n;&|]{0,60}/[a-z]*s[a-z]*[^\\n;&|]{0,40}/[a-z]*q[a-z]*[^\\n;&|]{0,40}[a-zA-Z]:\\\\(?:[ \\t]|\\*|$)"),
+        // Windows: del /s /f /q C:\（flag 任意顺序，整盘递归静默删除，与 rd 同级危险）
+        regex("Windows 整盘删除 (del)",
+            "(?i)\\bdel\\b(?=[^\\n]{0,60}/[a-z]*s)(?=[^\\n]{0,60}/[a-z]*f)(?=[^\\n]{0,60}/[a-z]*q)[^\\n]{0,80}[a-zA-Z]:\\\\(?:[ \\t]|\\*|$)"),
+        // PowerShell: Remove-Item -Recurse -Force C:\
+        regex("PowerShell 递归强删",
+            "(?i)remove-item\\b(?=[^\\n]{0,80}-recurse)(?=[^\\n]{0,80}-force)[^\\n]{0,100}[a-zA-Z]:\\\\(?:[ \\t]|\\*|$)"),
         // Windows: format C:  （冒号后不要求词边界，`format C:` / `format C:\x` 都拦截）
         regex("Windows 格式化", "(?i)\\bformat\\s+[a-zA-Z]:")
     );

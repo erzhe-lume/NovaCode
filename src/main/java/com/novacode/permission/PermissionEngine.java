@@ -60,6 +60,8 @@ public class PermissionEngine {
         if (tool == null) {
             return Decision.deny("未注册工具，拒绝执行"); // N7: never silently allow
         }
+        // INTERNAL（如 TodoWrite）：纯 Agent 私有状态，无用户可见副作用，免确认直通
+        if (tool.category() == ToolCategory.INTERNAL) return Decision.allow();
         CallInfo info = extract(tool, args);
 
         // ① blacklist — command tools only
@@ -119,6 +121,8 @@ public class PermissionEngine {
             case "EditFile" -> fileInfo("EditFile", "Edit", ToolCategory.WRITE, args);
             case "Glob" -> searchInfo("Glob", "Glob", ToolCategory.READ, args);
             case "Grep" -> searchInfo("Grep", "Grep", ToolCategory.READ, args);
+            case "TodoWrite" -> new CallInfo("TodoWrite", "TodoWrite", ToolCategory.INTERNAL,
+                    "", null, args);
             default -> new CallInfo(tool.name(), tool.name(), ToolCategory.COMMAND,
                     str(args, "command", ""), null, args); // unknown class → assume side effects (N7)
         };
@@ -163,6 +167,7 @@ public class PermissionEngine {
             case COMMAND -> "命令执行类工具，当前模式 " + mode.label() + " 需要确认";
             case WRITE -> "文件写工具，当前模式 " + mode.label() + " 需要确认";
             case READ -> "只读工具，当前模式 " + mode.label() + " 需要确认";
+            case INTERNAL -> "内部状态工具"; // decide() 已短路直通，此分支仅为穷举
         };
     }
 

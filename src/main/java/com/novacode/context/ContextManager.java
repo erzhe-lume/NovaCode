@@ -25,8 +25,8 @@ import java.util.List;
 public class ContextManager {
 
     // ── 默认阈值（Token，估算单位见 TokenEstimator）─────────────────────
-    private static final int SINGLE_SPILL_TOKENS = 2000;   // 单条工具结果存盘阈值
-    private static final int BATCH_SPILL_TOKENS = 4000;    // 单条消息工具结果合计存盘阈值
+    private static final int SINGLE_SPILL_TOKENS = 8000;   // 单条工具结果存盘阈值（正常源文件读取不触发）
+    private static final int BATCH_SPILL_TOKENS = 16000;   // 单条消息工具结果合计存盘阈值
     private static final int AUTO_MARGIN = 13000;          // 自动触发安全余量（F11）
     private static final int MANUAL_MARGIN = 3000;         // 手动触发安全余量（F11）
     private static final int KEEP_RECENT_TOKENS = 10000;   // 兜底压缩保留的近期 Token
@@ -34,7 +34,7 @@ public class ContextManager {
     private static final int MAX_SUMMARY_FAILURES = 3;     // 熔断阈值（F8）
     private static final int PREVIEW_CHARS = 600;          // 存盘后保留的预览长度
 
-    private final int contextWindow;
+    private int contextWindow;
     private final Path spillDir;
     private final TokenEstimator estimator = new TokenEstimator();
     private final Summarizer summarizer;
@@ -52,6 +52,32 @@ public class ContextManager {
             // 存盘目录创建失败时，spill() 会静默降级为不存盘
         }
         this.summarizer = new Summarizer(config);
+        Thread.startVirtualThread(this::cleanupOldSpill);
+    }
+
+    /** /model 切换后同步窗口阈值与摘要客户端。 */
+    public void switchProvider(ProviderConfig config) {
+        this.contextWindow = config.getContextWindow();
+        this.summarizer.switchProvider(config);
+    }
+
+    /** 启动时后台清理 7 天前的 spill 文件（历史会话留下的），防止目录无限增长。 */
+    private void cleanupOldSpill() {
+        long cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000;
+        try (var stream = Files.list(spillDir)) {
+            stream.filter(Files::isRegularFile)
+                  .filter(p -> p.getFileName().toString().startsWith("tool_"))
+                  .forEach(p -> {
+                      try {
+                          if (Files.getLastModifiedTime(p).toMillis() < cutoff) {
+                              Files.deleteIfExists(p);
+                          }
+                      } catch (IOException ignored) {
+                          // 单个文件删除失败不影响其余
+                      }
+                  });
+        } catch (IOException ignored) {
+        }
     }
 
     // ── Agent 循环钩子 ──────────────────────────────────────────────────

@@ -82,6 +82,9 @@ public class ConfigLoader {
             if (p.getModel() == null || p.getModel().isBlank())
                 throw new ConfigException(prefix + ": 'model' is required.");
 
+            // max_tokens 非法值回落默认（8192）
+            if (p.getMaxTokens() <= 0) p.setMaxTokens(8192);
+
             if (p.getBaseUrl() == null || p.getBaseUrl().isBlank()) {
                 p.setBaseUrl(switch (protocol) {
                     case "anthropic" -> "https://api.anthropic.com";

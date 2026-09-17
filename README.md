@@ -18,6 +18,10 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 - **跨会话记忆**：四类笔记（user / feedback / project / reference）两级作用域，异步 LLM 提取，索引注入 System Prompt。
 - **扩展机制**：Slash 命令（拦截快车道）、Skill（行为可插拔）、Hook（15 个生命周期事件）、MCP（工具可插拔）。
 - **多 Agent 协作**：SubAgent 委派（上下文隔离）→ Git Worktree 文件隔离 → Agent Teams 协作（邮箱通信 + Coordinator 统筹调度）。
+- **任务清单**：TodoWrite 工具（免确认、Plan Mode 可用、状态持久化），长任务进度不跑偏。
+- **会话管理**：JSONL 追加式存档，`/resume <id前缀>` 切换历史会话、`/session rm` 删除。
+- **Markdown TUI 渲染**：代码块 / 标题 / 列表 / 行内代码 / 链接的 ANSI 样式化输出（CommonMark AST → 平铺 span）。
+- **Prompt Caching**：Anthropic 显式缓存断点 + DeepSeek 自动前缀缓存适配，状态栏实时显示缓存命中率。
 - **Elm 架构 TUI**：纯函数状态转移（Model / Message / UpdateResult），比命令式渲染更可控。
 
 ## 🏗 架构
@@ -45,6 +49,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 | JSON / YAML | Jackson databind + dataformat-yaml |
 | Markdown 渲染 | CommonMark-Java |
 | 构建 | Maven（shade 打包可执行 jar） |
+| 测试 | JUnit 5（190 个单元测试，含 Agent 循环端到端与 SSE 协议解析测试，`mvn test`） |
 
 ## 🚀 快速开始
 
@@ -61,11 +66,20 @@ mvn -q package
 java -jar target/novacode-1.0.0.jar
 ```
 
-`config.yaml` 支持多 provider，配置后启动可切换；单 provider 直入对话。
+`config.yaml` 支持多 provider：缺省用第一个，`--provider <名称|序号>` 选择（名称忽略大小写、支持唯一前缀）：
+
+```bash
+java -jar target/novacode-1.0.0.jar                       # 第一个 provider
+java -jar target/novacode-1.0.0.jar --provider GPT-4o     # 按名称
+java -jar target/novacode-1.0.0.jar --provider 2          # 按序号
+```
+
+运行中用 `/model <名称|序号>` 热切换（client / 上下文窗口 / 摘要器 / 环境块联动重建），`/model` 列出全部。
 
 ## 📖 目录结构
 
 ```
+src/test/java/com/novacode/    单元测试（协议/上下文/工具/权限/会话/渲染/配置）
 src/main/java/com/novacode/
 ├── agent/        Agent Loop、事件流、停止条件
 ├── command/      Slash 命令框架

@@ -43,7 +43,9 @@ public class ToolRegistry {
         boolean openAI = "openai".equals(protocol) || "openai-compat".equals(protocol);
         var schemas = new ArrayList<Map<String, Object>>();
         for (var tool : tools.values()) {
-            if (readOnly && tool.category() != ToolCategory.READ) continue;
+            // Plan Mode：只读工具 + INTERNAL（任务清单是规划过程的一部分）
+            if (readOnly && tool.category() != ToolCategory.READ
+                    && tool.category() != ToolCategory.INTERNAL) continue;
             if (allowed != null && !allowed.contains(tool.name())) continue;
             var base = tool.schema();
             if (openAI) {
@@ -70,6 +72,7 @@ public class ToolRegistry {
         reg.register(new BashTool());
         reg.register(new GlobTool());
         reg.register(new GrepTool());
+        reg.register(new TodoTool());
         return reg;
     }
 }

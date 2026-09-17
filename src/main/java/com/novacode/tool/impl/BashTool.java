@@ -86,17 +86,28 @@ public class BashTool implements Tool {
 
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS);
             if (!finished) {
+                // 杀整棵进程树：cmd /c 启动的孙进程（ping 等）不随父进程死，
+                // 会变成孤儿继续占着 cwd/句柄。
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
                 process.waitFor(1, TimeUnit.SECONDS);
                 drainer.join(1000);
-                return ToolResult.error("Error: command timed out after " + timeout + "s");
+                // 带上已捕获的输出 —— 卡住的命令往往已经吐出了关键线索（交互提示、报错）
+                String partial;
+                synchronized (buf) { partial = ReadFileTool.decodeBytes(buf.toByteArray()); }
+                var tsb = new StringBuilder("Error: command timed out after " + timeout + "s");
+                if (!partial.isBlank()) {
+                    tsb.append("\n--- 超时前已捕获的输出 ---\n").append(partial);
+                    if (!partial.endsWith("\n")) tsb.append('\n');
+                }
+                return ToolResult.error(tsb.toString());
             }
             // Process finished normally; let the drainer flush any trailing bytes.
             drainer.join(1000);
 
             String output;
             synchronized (buf) {
-                output = buf.toString();
+                output = ReadFileTool.decodeBytes(buf.toByteArray());
             }
 
             int exitCode = process.exitValue();

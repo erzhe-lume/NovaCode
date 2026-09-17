@@ -20,7 +20,9 @@ public class GlobTool implements Tool {
     @Override public ToolCategory category() { return ToolCategory.READ; }
     @Override public String description() {
         return "Find files matching a glob pattern (**/*.py, src/**/*.ts). Skips .git/node_modules/etc. Sorted by mtime. "
-                + "Always use this instead of find or ls via Bash.";
+                + "Always use this instead of find or ls via Bash. "
+                + "Use when you know or can guess the filename/extension (e.g. '**/*Tool.java' to map the codebase); "
+                + "use Grep instead when you know content that must appear inside the file.";
     }
 
     @Override
@@ -51,6 +53,14 @@ public class GlobTool implements Tool {
         } catch (java.util.regex.PatternSyntaxException e) {
             return ToolResult.error("Error: invalid glob pattern: " + e.getMessage());
         }
+        // Java glob 的 `**/` 不能匹配零层目录（`**/*.java` 匹配不了根下文件，
+        // `src/**/*.java` 匹配不了 src 直下文件），补充两个符合直觉的降级 matcher：
+        PathMatcher leadingFallback = pattern.startsWith("**/")
+                ? FileSystems.getDefault().getPathMatcher("glob:" + pattern.substring(3))
+                : null;
+        PathMatcher collapsed = pattern.contains("/**/")
+                ? FileSystems.getDefault().getPathMatcher("glob:" + pattern.replace("/**/", "/"))
+                : null;
         var matches = new ArrayList<String>();
 
         try {
@@ -64,8 +74,11 @@ public class GlobTool implements Tool {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     Path rel = root.relativize(file);
-                    if (matcher.matches(file.getFileName()) || matcher.matches(rel))
-                        matches.add(rel.toString());
+                    boolean hit = matcher.matches(file.getFileName()) || matcher.matches(rel)
+                            || (leadingFallback != null
+                                && (leadingFallback.matches(rel) || leadingFallback.matches(file.getFileName())))
+                            || (collapsed != null && collapsed.matches(rel));
+                    if (hit) matches.add(rel.toString());
                     return FileVisitResult.CONTINUE;
                 }
                 @Override

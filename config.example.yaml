@@ -5,9 +5,13 @@ providers:
   - name: "DeepSeek"
     protocol: openai-compat
     api_key: "sk-REPLACE_ME"
-    model: deepseek-v4-flash
+    model: deepseek-flash
     thinking: false
     base_url: "https://api.deepseek.com"
+    # 上下文窗口：DeepSeek v4 系列为 128K，按模型实际能力设置（影响自动压缩触发时机）
+    context_window: 128000
+    # 单次响应输出上限（可选，默认 8192）。大文件写入建议 >= 8192
+    # max_tokens: 8192
 
   # - name: "OpenAI"
   #   protocol: openai

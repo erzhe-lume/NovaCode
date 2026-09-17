@@ -6,6 +6,7 @@ import com.novacode.command.BuiltinCommands;
 import com.novacode.command.CommandContext;
 import com.novacode.command.CommandParser;
 import com.novacode.command.CommandRegistry;
+import com.novacode.config.ConfigLoader;
 import com.novacode.config.ProviderConfig;
 import com.novacode.context.ContextManager;
 import com.novacode.hook.HookContext;
@@ -74,17 +75,19 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     private static final long TIME_GAP_SECONDS = 3600;
 
     // ── State ───────────────────────────────────────────────────────────
-    private final ProviderConfig config;
+    private ProviderConfig config;
+    /** config.yaml 路径（/model 运行时切换用）。 */
+    private final Path configPath;
     /** 第 15 章 F7：coordinator 能力开关（config 层，与 env 双锁判定见 {@link com.novacode.teams.Coordinator}）。 */
     private final boolean coordinatorEnabled;
     /** 第 15 章：Lead 侧团队管理器（长驻；关闭钩子 {@code teamManager::closeAll} 兜底停成员）。 */
     private final TeamManager teamManager;
-    private final EnvironmentContext env;
     /** 组装式 system prompt；每轮重建（第 11 章：注入技能菜单与激活正文，见 {@link #buildCurrentSystemPrompt()}）。 */
     private String systemPrompt;
     private String instructions;
     private String memorySection;
-    private final LlmClient client;
+    private LlmClient client;
+    private EnvironmentContext env;
     private final ToolRegistry toolRegistry;
     private final McpManager mcpManager;
     private final FileStateCache fileStateCache = new FileStateCache();
@@ -113,6 +116,34 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     private int inputCursor;
     private boolean streaming;
     private int scrollOffset;
+
+    // 输入历史：index 0 = 最近一条；historyPos >= 0 表示当前输入框内容来自历史
+    private final List<String> inputHistory = new ArrayList<>();
+    private int historyPos = -1;
+    private static final int INPUT_HISTORY_MAX = 50;
+
+    /** 记录一条已提交输入（去重相邻重复，超量裁剪）。 */
+    private void rememberInput(String text) {
+        if (text == null || text.isBlank()) return;
+        inputHistory.remove(text);
+        inputHistory.add(0, text);
+        while (inputHistory.size() > INPUT_HISTORY_MAX) inputHistory.remove(inputHistory.size() - 1);
+        historyPos = -1;
+    }
+
+    /** ↑(+1)/↓(-1) 在输入历史间移动；回到 -1 以下清空输入框（回到"新输入"状态）。 */
+    private void recallHistory(int delta) {
+        int next = historyPos + delta;
+        if (next >= inputHistory.size()) return;
+        inputBuf.setLength(0);
+        if (next < 0) {
+            historyPos = -1;
+        } else {
+            historyPos = next;
+            inputBuf.append(inputHistory.get(next));
+        }
+        inputCursor = inputBuf.length();
+    }
 
     // Agent-loop state
     private volatile BlockingQueue<AgentEvent> agentQueue;
@@ -144,8 +175,14 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
 
     @SuppressWarnings("this-escape") // 同单参构造器
     public ChatModel(ProviderConfig config, boolean coordinatorEnabled) {
+        this(config, coordinatorEnabled, Path.of("config.yaml"));
+    }
+
+    @SuppressWarnings("this-escape") // 同单参构造器
+    public ChatModel(ProviderConfig config, boolean coordinatorEnabled, Path configPath) {
         this.config = config;
         this.coordinatorEnabled = coordinatorEnabled;
+        this.configPath = configPath;
         this.teamManager = new TeamManager();
         Path projectRoot = Path.of(System.getProperty("user.dir"));
 
@@ -281,6 +318,54 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         return base;
     }
 
+    /** /model <名称|序号>：空闲时切换 provider（client/窗口阈值/摘要/环境块联动重建）。 */
+    @Override
+    public String switchModel(String selector) {
+        if (streaming) return "任务进行中，等当前轮结束后再切换";
+        List<ProviderConfig> providers;
+        try {
+            providers = ConfigLoader.load(configPath);
+        } catch (Exception e) {
+            return "读取配置失败: " + e.getMessage();
+        }
+        ProviderConfig target = com.novacode.App.resolveProvider(providers, selector);
+        if (target == null) {
+            var sb = new StringBuilder("未找到 provider '" + selector + "'，可用：");
+            for (int i = 0; i < providers.size(); i++) {
+                sb.append("\n  ").append(i + 1).append(". ").append(providers.get(i).getName());
+            }
+            return sb.toString();
+        }
+        if (target.getName().equals(config.getName())) {
+            return "已在使用 " + target.getName() + "（" + config.getModel() + "）";
+        }
+        config = target;
+        client = LlmClient.create(config, null);
+        agent.setClient(client);
+        contextManager.switchProvider(config);
+        env = PromptBuilder.detectEnvironment(config.getModel());
+        systemPrompt = buildCurrentSystemPrompt();
+        return "已切换到 " + config.getName() + "（" + config.getModel() + "）";
+    }
+
+    /** /model：列出配置中的全部 provider，标记当前。 */
+    @Override
+    public String modelList() {
+        try {
+            List<ProviderConfig> providers = ConfigLoader.load(configPath);
+            var sb = new StringBuilder("可用 provider（/model <名称|序号> 切换）：");
+            for (int i = 0; i < providers.size(); i++) {
+                ProviderConfig p = providers.get(i);
+                sb.append("\n  ").append(i + 1).append(". ").append(p.getName())
+                        .append(" (").append(p.getModel()).append(")");
+                if (p.getName().equals(config.getName())) sb.append(" ← 当前");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "读取配置失败: " + e.getMessage();
+        }
+    }
+
     /** 触发会话级/系统级事件（无注入返回，动作失败只记日志不抛出）。 */
     private void fireSessionHook(HookEvent event) {
         hookEngine.runHooks(new HookContext(event, null, null, null, null, null));
@@ -390,12 +475,17 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
                         content.add(Styles.error.render("  " + sanitize(m.content)));
                     } else {
                         content.add(Styles.aiMarker.render("── Nova ──"));
-                        for (String line : sanitize(m.content).split("\n"))
-                            content.add("  " + Styles.aiText.render(line));
+                        for (String line : com.novacode.ui.MarkdownView.renderLines(sanitize(m.content)))
+                            content.add("  " + line);
                     }
                 }
                 case "tool" -> {
-                    content.add(Styles.dim("  ● " + sanitize(m.content)));
+                    // 多行工具消息（任务清单等）逐行渲染，最多 6 行后折叠
+                    String[] lines = sanitize(m.content).split("\n");
+                    content.add(Styles.dim("  ● " + lines[0]));
+                    for (int i = 1; i < lines.length && i < 6; i++)
+                        content.add(Styles.dim("    " + lines[i]));
+                    if (lines.length > 6) content.add(Styles.dim("    …"));
                 }
                 case "tool_result" -> {
                     content.add(Styles.dim("  └─ " + clipLines(sanitize(m.content), 3)));
@@ -413,11 +503,19 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
             content.add("");
         }
 
-        // Streaming text
+        // Streaming text：尾部预览（跟随最新输出），已完成行过 Markdown 渲染，
+        // 末行（可能未写完）保持原文，避免半截标记闪烁。
         if (streaming && !streamBuf.isEmpty()) {
             content.add(Styles.aiMarker.render("── Nova ──") + " " + Styles.yellow("● streaming"));
-            for (String line : clipLines(sanitize(streamBuf.toString()), 6).split("\n"))
-                content.add("  " + line);
+            String text = sanitize(streamBuf.toString());
+            String[] lines = text.split("\n", -1);
+            String completed = lines.length == 1 ? "" : text.substring(0, text.lastIndexOf('\n'));
+            var rendered = new ArrayList<String>(MarkdownView.renderLines(completed));
+            rendered.add(lines[lines.length - 1]);
+            int preview = 8;
+            for (int i = Math.max(0, rendered.size() - preview); i < rendered.size(); i++)
+                content.add("  " + rendered.get(i));
+            if (rendered.size() > preview) content.add(Styles.dim("  …"));
             content.add("");
         }
 
@@ -473,9 +571,12 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         long elapsed = streaming ? (System.currentTimeMillis() - streamStartMs) / 1000 : -1;
         // F7/AC9：权限模式占据原 provider 名位置，状态栏不再显示 provider 名。
         String statusLeft = " " + Styles.yellow("[" + currentMode.label() + "]");
+        String todoProgress = todoProgressSuffix();
+        if (todoProgress != null) statusLeft += " " + Styles.green("✓" + todoProgress);
         String tokStr = "";
         if (totalInputTokens > 0 || totalOutputTokens > 0)
-            tokStr = " ↑" + fmtTok(totalInputTokens) + " ↓" + fmtTok(totalOutputTokens) + " tok  ";
+            tokStr = " ↑" + fmtTok(totalInputTokens) + " ↓" + fmtTok(totalOutputTokens)
+                    + cacheRateSuffix() + " tok  ";
         String modelName = config.getModel();
         if (modelName.length() > 48) modelName = modelName.substring(0, 48) + "…";
         String statusRight;
@@ -567,8 +668,24 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
             case "right" -> { if (inputCursor < inputBuf.length()) inputCursor++; yield UpdateResult.from(this); }
             case "home" ->  { inputCursor = 0; yield UpdateResult.from(this); }
             case "end" ->   { inputCursor = inputBuf.length(); yield UpdateResult.from(this); }
-            case "up", "pgup" ->     { scrollOffset++; yield UpdateResult.from(this); }
-            case "down", "pgdown" -> { if (scrollOffset > 0) scrollOffset--; yield UpdateResult.from(this); }
+            case "up" -> {
+                if (inputBuf.isEmpty() && !inputHistory.isEmpty()) {
+                    recallHistory(+1);
+                } else {
+                    scrollOffset += 3;
+                }
+                yield UpdateResult.from(this);
+            }
+            case "down" -> {
+                if (historyPos >= 0) {
+                    recallHistory(-1);
+                } else {
+                    scrollOffset = Math.max(0, scrollOffset - 3);
+                }
+                yield UpdateResult.from(this);
+            }
+            case "pgup" ->   { scrollOffset += 3; yield UpdateResult.from(this); }
+            case "pgdown" -> { scrollOffset = Math.max(0, scrollOffset - 3); yield UpdateResult.from(this); }
             default -> {
                 if (runes != null) for (char ch : runes) if (ch >= 32) { inputBuf.insert(inputCursor, ch); inputCursor++; }
                 yield UpdateResult.from(this);
@@ -590,6 +707,7 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     }
 
     @Override public void sendPrompt(String content) {
+        rememberInput(content);
         msgs.add(new Msg("user", content, false));
         history.add(new ChatMessage(ChatMessage.Role.USER, content));
         sessionStore.sync(history);
@@ -647,6 +765,32 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         return id;
     }
 
+    /** /resume <id前缀>：当前会话先落盘，再切换到目标会话（历史 + 渲染重建）。 */
+    @Override public String resumeSession(String idPrefix) {
+        sessionStore.sync(history);
+        var resume = sessionStore.resumeById(idPrefix);
+        if (!resume.found()) {
+            return "未找到匹配的会话（前缀 " + idPrefix + "），当前会话保持不变";
+        }
+        history.clear();
+        history.addAll(resume.messages());
+        if (resume.lastTimestamp() > 0
+                && (System.currentTimeMillis() / 1000 - resume.lastTimestamp()) > TIME_GAP_SECONDS) {
+            history.add(timeGapMessage(resume.lastTimestamp()));
+        }
+        // token 超限先压一次；压缩后消息序列与原文件不再一一对应 → 落新会话文件
+        String compact = contextManager.compressNow(history);
+        if (!compact.startsWith("无需压缩")) {
+            sessionStore.startNewSession();
+            sessionStore.sync(history);
+        }
+        msgs.clear();
+        renderResume(resume.messages());
+        String status = "已切换到会话 " + resume.id() + "（" + resume.messages().size() + " 条消息）";
+        if (!compact.startsWith("无需压缩")) status += "；" + compact;
+        return status;
+    }
+
     @Override public void refreshStatus() {
         // TEA 每帧自动重绘，状态栏（含模式标记）无需额外刷新。
     }
@@ -662,6 +806,7 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     private UpdateResult<ChatModel> submit() {
         String text = inputBuf.toString().trim();
         if (text.isEmpty() || streaming) return UpdateResult.from(this);
+        rememberInput(text);
 
         // 第 10 章：斜杠命令走本地分发，否则作为普通消息送 Agent（F5）。
         var parsed = CommandParser.parse(text);
@@ -728,10 +873,12 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
                 }
                 case AgentEvent.ToolResultEvent tr -> {
                     runningTools.removeIf(t -> t.toolId.equals(tr.toolId()));
-                    // Show tool result in messages
+                    // 展示摘要：按行折叠到 3 行（TodoWrite 的清单输出本身有界，不折叠）
                     String resultSummary = tr.output();
-                    if (!tr.isError()) {
-                        if (resultSummary.length() > 200) resultSummary = resultSummary.substring(0, 200) + "…";
+                    if (!tr.isError() && !"TodoWrite".equals(tr.toolName())) {
+                        resultSummary = clipLines(resultSummary, 3);
+                        if (resultSummary.length() > 400)
+                            resultSummary = resultSummary.substring(0, 400) + "…";
                     }
                     msgs.add(new Msg("tool", tr.toolName() + ": " + resultSummary, tr.isError()));
                 }
@@ -920,8 +1067,9 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     }
 
     /** Strip ANSI escape sequences and C0 control chars (except tab/newline) so
-     *  model/user text can't inject terminal control codes (ANSI injection defense). */
-    private static String sanitize(String s) {
+     *  model/user text can't inject terminal control codes (ANSI injection defense).
+     *  包私有以便测试。 */
+    static String sanitize(String s) {
         if (s == null) return "";
         if (s.isEmpty()) return s;
         var sb = new StringBuilder(s.length());
@@ -933,6 +1081,7 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
                     char intro = s.charAt(i);
                     if (intro == '[' || intro == ']' || intro == 'P' || intro == '^' || intro == '_') {
                         boolean stringType = intro != '[';
+                        i++; // 从序列体开始扫（intro 本身在 CSI 终结符范围内，不能当终结符判）
                         while (i < s.length()) {
                             char d = s.charAt(i);
                             if (!stringType) {
@@ -960,11 +1109,34 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         return String.valueOf(n);
     }
 
+    /** 任务清单进度（注册表里的 TodoWrite 实例）；无清单返回 null。 */
+    private String todoProgressSuffix() {
+        if (toolRegistry.get("TodoWrite") instanceof com.novacode.tool.impl.TodoTool t) {
+            return t.progressSummary();
+        }
+        return null;
+    }
+
+    /** 缓存命中率后缀（状态栏 / status）。
+     *  OpenAI-compat（DeepSeek 自动缓存）：prompt_tokens 已包含命中部分 → 命中/prompt 总量；
+     *  Anthropic：input_tokens 不含缓存读写 → 命中/(输入+读+写)。无命中返回空串。 */
+    private String cacheRateSuffix() {
+        if (totalCacheRead <= 0) return "";
+        long denom = "anthropic".equals(config.getProtocol())
+                ? (long) totalInputTokens + totalCacheRead + totalCacheWrite
+                : (long) totalInputTokens;
+        if (denom <= 0) return "";
+        int pct = (int) Math.round(100.0 * totalCacheRead / denom);
+        return " ⚡" + pct + "%";
+    }
+
     /**
-     * 缓存 smoke 日志（F8 验证用，不进状态栏）：每完成一轮追加一行到 nova_cache.log。
-     * DeepSeek 路径第 2 轮起 cacheRead 应 > 0，证明稳定前缀命中缓存断点。
+     * 缓存命中率日志（默认关闭）：设 NOVACODE_CACHE_LOG=1 开启，每完成一轮追加一行到
+     * nova_cache.log，用于验证 prompt caching 生效（第 2 轮起 cacheRead 应 > 0）。
      */
     private void writeCacheSmokeLog() {
+        String flag = System.getenv("NOVACODE_CACHE_LOG");
+        if (!"1".equals(flag) && !"true".equalsIgnoreCase(flag)) return;
         String line = "[nova_cache] " + LocalDateTime.now()
                 + " model=" + config.getModel()
                 + " cacheRead=" + totalCacheRead
@@ -992,6 +1164,10 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         }
 
         String argsPreview() {
+            if ("TodoWrite".equals(toolName)) {
+                if (args != null && args.get("todos") instanceof List<?> l) return l.size() + " 项任务";
+                return "任务清单";
+            }
             if (args == null || args.isEmpty()) return "";
             // Show first key=value pair
             var it = args.entrySet().iterator();

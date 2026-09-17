@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "NovaCode ReAct Agent Loop",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1150, 660],
+    "views": [
+      {
+        "id": "happy-path",
+        "label": "正常执行链路",
+        "focus": ["user_input", "cmd_check", "agent_run", "iter_begin", "llm_stream", "has_tools", "perm_gate", "tool_exec"],
+        "note": "从用户输入到工具执行的主链路，结果回注后进入下一轮迭代。"
+      },
+      {
+        "id": "stop-conditions",
+        "label": "停止条件",
+        "focus": ["iter_begin", "has_tools", "natural_stop", "stop_cond"],
+        "note": "四重停止条件：迭代上限、无工具调用、连续未知工具、用户取消。"
+      },
+      {
+        "id": "safety-gate",
+        "label": "权限拦截",
+        "focus": ["has_tools", "perm_gate", "tool_exec"],
+        "note": "五层权限管线在工具执行前拦截，deny 恒优先短路返回。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "ui", "label": "用户交互" },
+    { "id": "agent", "label": "Agent 运行时" },
+    { "id": "security", "label": "权限 / 收敛", "variant": "exception" },
+    { "id": "tools", "label": "工具执行" }
+  ],
+  "phases": [
+    { "id": "intake", "label": "输入与分发", "fromCol": 0, "toCol": 1 },
+    { "id": "llm_call", "label": "LLM 调用", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "decide", "label": "决策与执行", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "react_loop", "label": "ReAct 循环", "lane": "agent", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
+    { "id": "safety", "label": "安全 / 收敛", "lane": "security", "fromCol": 4, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["user_input", "cmd_check", "agent_run", "iter_begin", "llm_stream", "has_tools", "perm_gate", "tool_exec"],
+  "semanticChecks": {
+    "allowedRoots": ["user_input"],
+    "allowedTerminals": ["natural_stop", "stop_cond"]
+  },
+  "nodes": [
+    { "id": "user_input", "lane": "ui", "col": 0, "type": "external", "label": "用户输入", "sublabel": "自然语言指令", "width": 130 },
+    { "id": "cmd_check", "lane": "ui", "col": 1, "type": "frontend", "label": "斜杠命令?", "sublabel": "/help /plan /skills", "width": 130 },
+    { "id": "agent_run", "lane": "agent", "col": 1, "type": "backend", "label": "Agent.run()", "sublabel": "虚拟线程 + 事件队列", "width": 130 },
+    { "id": "iter_begin", "lane": "agent", "col": 2, "type": "backend", "label": "迭代开始", "sublabel": "interrupt + hook + ctx", "width": 150 },
+    { "id": "llm_stream", "lane": "agent", "col": 3, "type": "backend", "label": "LLM 流式", "sublabel": "streamOnce", "width": 130 },
+    { "id": "has_tools", "lane": "agent", "col": 4, "type": "backend", "label": "有工具调用?", "sublabel": "ToolCallComplete", "width": 130 },
+    { "id": "natural_stop", "lane": "agent", "col": 5, "type": "backend", "label": "自然结束", "sublabel": "记忆沉淀 + sync", "width": 130 },
+    { "id": "perm_gate", "lane": "security", "col": 4, "type": "security", "label": "五层权限", "sublabel": "deny 恒优先短路", "width": 130 },
+    { "id": "tool_exec", "lane": "tools", "col": 5, "type": "backend", "label": "工具执行", "sublabel": "READ并发 / WRITE串行", "width": 130 },
+    { "id": "stop_cond", "lane": "security", "col": 5, "type": "security", "label": "停止条件", "sublabel": "cap50 / unknown×3", "width": 150 }
+  ],
+  "edges": [
+    { "id": "e1", "from": "user_input", "to": "cmd_check", "variant": "default" },
+    { "id": "e2", "from": "cmd_check", "to": "agent_run", "label": "普通消息", "variant": "emphasis" },
+    { "id": "e3", "from": "agent_run", "to": "iter_begin", "variant": "default" },
+    { "id": "e4", "from": "iter_begin", "to": "llm_stream", "label": "schema + ctx prep", "variant": "emphasis" },
+    { "id": "e5", "from": "llm_stream", "to": "has_tools", "variant": "default" },
+    { "id": "e6", "from": "has_tools", "to": "natural_stop", "label": "无工具调用", "variant": "dashed", "role": "branch" },
+    { "id": "e7", "from": "has_tools", "to": "perm_gate", "label": "有工具调用", "variant": "emphasis" },
+    { "id": "e8", "from": "perm_gate", "to": "tool_exec", "label": "放行", "variant": "emphasis" },
+    { "id": "e9", "from": "tool_exec", "to": "iter_begin", "label": "结果回注", "variant": "default", "role": "return", "route": "auto" },
+    { "id": "e10", "from": "iter_begin", "to": "stop_cond", "label": "迭代上限", "variant": "security", "role": "error", "route": "drop" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "ReAct 循环",
+      "items": [
+        "迭代开始：interrupt 检查 + hook:turn_start 注入 + schema 重算 + ctx 两层压缩",
+        "LLM 流式：computeSchemas(plan/whitelist/filter) → prepareBeforeRequest → streamOnce",
+        "结果回注：tool 结果写入 history，下一轮 LLM 基于完整上下文继续推理"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "四重停止条件",
+      "items": [
+        "自然结束：模型无工具调用 → 记忆沉淀 + session sync",
+        "迭代上限：50 轮自动停止（可继续发消息推进）",
+        "连续未知工具：3 轮只请求未注册工具 → 自动停止",
+        "流超时 / 用户取消：90s 超时或 Ctrl+C 中断"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "批量执行策略",
+      "items": [
+        "READ 类工具（ReadFile/Glob/Grep）：虚拟线程并发批次执行",
+        "WRITE/COMMAND 类工具（WriteFile/EditFile/Bash）：串行逐个执行",
+        "权限拒绝和 Hook 拦截的结果直接回注模型，不阻塞批次"
+      ]
+    }
+  ]
+}
