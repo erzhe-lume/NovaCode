@@ -109,7 +109,7 @@ public final class SkillManager {
         for (Tool t : s.dedicatedTools()) registry.register(t);
         String sop = substitute(s.body(), args);
         active.put(s.name(), sop);
-        agent.setToolWhitelist(activeWhitelist());
+        agent.policy().setToolWhitelist(activeWhitelist());
         return sop;
     }
 
@@ -120,7 +120,7 @@ public final class SkillManager {
             if (s != null) for (Tool t : s.dedicatedTools()) registry.remove(t.name());
         }
         active.clear();
-        agent.setToolWhitelist(Set.of());
+        agent.policy().setToolWhitelist(Set.of());
     }
 
     /** 收窄后的白名单：非空 whitelist 并集 ∪ 专属工具 ∪ use_skill；无收窄返回空集。 */
@@ -258,7 +258,7 @@ public final class SkillManager {
         this.available = scanAndValidate();
         active.keySet().retainAll(available.keySet());
         registerSkillCommands();
-        agent.setToolWhitelist(activeWhitelist());
+        agent.policy().setToolWhitelist(activeWhitelist());
         int newCount = 0;
         for (String name : available.keySet()) if (!before.containsKey(name)) newCount++;
         return "已重扫 Skill：" + available.size() + " 个可用" + (newCount > 0 ? "（新增 " + newCount + "）" : "");

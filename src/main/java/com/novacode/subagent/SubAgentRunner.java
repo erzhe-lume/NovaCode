@@ -82,7 +82,7 @@ public final class SubAgentRunner {
         PermissionEngine subPerm = parentPermissionEngine.forSubAgent(() -> mode);
         if (sandboxRoot != null) subPerm = subPerm.withSandbox(new PathSandbox(sandboxRoot));
         Agent agent = new Agent(client, registry, protocol, subPerm, new ContextManager(providerConfig));
-        if (maxTurns > 0) agent.setMaxIterations(maxTurns);
+        if (maxTurns > 0) agent.policy().setMaxIterations(maxTurns);
         return agent;
     }
 

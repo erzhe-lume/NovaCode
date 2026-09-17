@@ -121,14 +121,54 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     private final List<String> inputHistory = new ArrayList<>();
     private int historyPos = -1;
     private static final int INPUT_HISTORY_MAX = 50;
+    /** 输入历史持久化文件（用户级，跨项目共享；与 MewCode 时代同格式 {text, ts} 每行一条）。 */
+    private static final Path PROMPT_HISTORY_FILE =
+            Path.of(System.getProperty("user.home"), ".mewcode", "prompt_history.jsonl");
+    private static final com.fasterxml.jackson.databind.ObjectMapper HISTORY_JSON =
+            new com.fasterxml.jackson.databind.ObjectMapper();
 
-    /** 记录一条已提交输入（去重相邻重复，超量裁剪）。 */
+    /** 记录一条已提交输入（去重相邻重复，超量裁剪），并落盘。 */
     private void rememberInput(String text) {
         if (text == null || text.isBlank()) return;
         inputHistory.remove(text);
         inputHistory.add(0, text);
         while (inputHistory.size() > INPUT_HISTORY_MAX) inputHistory.remove(inputHistory.size() - 1);
         historyPos = -1;
+        appendPromptHistory(PROMPT_HISTORY_FILE, text);
+    }
+
+    /** 从磁盘加载输入历史（最新在前，截取最近 N 条；坏行跳过）。包私有以便测试。 */
+    static List<String> loadPromptHistory(Path file) {
+        if (!Files.exists(file)) return List.of();
+        try {
+            List<String> lines = Files.readAllLines(file);
+            var out = new ArrayList<String>();
+            for (int i = lines.size() - 1; i >= 0 && out.size() < INPUT_HISTORY_MAX; i--) {
+                if (lines.get(i).isBlank()) continue;
+                try {
+                    var node = HISTORY_JSON.readTree(lines.get(i));
+                    String text = node.path("text").asText("");
+                    if (!text.isBlank()) out.add(text);
+                } catch (Exception ignored) {
+                    // 坏行跳过
+                }
+            }
+            return out;
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
+    /** 追加一条输入历史（尽力而为，失败静默）。包私有以便测试。 */
+    static void appendPromptHistory(Path file, String text) {
+        try {
+            if (file.getParent() != null) Files.createDirectories(file.getParent());
+            String line = HISTORY_JSON.writeValueAsString(java.util.Map.of(
+                    "text", text, "ts", java.time.Instant.now().getEpochSecond()));
+            Files.writeString(file, line + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+        }
     }
 
     /** ↑(+1)/↓(-1) 在输入历史间移动；回到 -1 以下清空输入框（回到"新输入"状态）。 */
@@ -226,10 +266,10 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         this.contextManager = new ContextManager(config);
         this.agent = new Agent(client, toolRegistry, config.getProtocol(), permissionEngine, contextManager);
         // 第 9 章：自然结束（无工具调用）后异步沉淀记忆（F7/N1）。
-        agent.setOnNaturalStop(memoryManager::extractAsync);
+        agent.policy().setOnNaturalStop(memoryManager::extractAsync);
 
         // 第 12 章：Hook 系统。加载两级配置 + 集中校验，附加到 Agent（缺失即空）。
-        agent.setHookEngine(hookEngine);
+        agent.policy().setHookEngine(hookEngine);
         var hookLoaded = HookLoader.load(projectRoot, Path.of(System.getProperty("user.home")));
         hookEngine.loadHooks(hookLoaded.hooks());
         for (String err : hookLoaded.errors()) {
@@ -248,6 +288,8 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
 
         // 第 9 章：恢复最近会话（自动续上中断前的工作记忆）。
         resumeSession();
+        // 恢复跨会话输入历史（↑ 键）。
+        inputHistory.addAll(loadPromptHistory(PROMPT_HISTORY_FILE));
 
         // 第 12 章：session_start 事件 + 提示注入（注入正文拼进每轮 system prompt）。
         List<String> injected = hookEngine.runInjectHooks(
@@ -298,9 +340,9 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
         toolRegistry.register(new TaskStopTool(teamManager));
         // F7：coordinator 双锁激活时，每轮收窄工具白名单为调度只读集 + 注入调度指引；
         // 未激活（config 或 env 任一关）则全工具照常。运行时随 env 变化自适应。
-        agent.setToolNameFilter(name ->
+        agent.policy().setToolNameFilter(name ->
                 Coordinator.active(coordinatorEnabled) ? Coordinator.isCoordinatorTool(name) : true);
-        agent.setCoordinatorActiveFn(() -> Coordinator.active(coordinatorEnabled));
+        agent.policy().setCoordinatorActiveFn(() -> Coordinator.active(coordinatorEnabled));
         // 进程退出兜底：停所有队员虚拟线程并释放锁文件。
         Runtime.getRuntime().addShutdownHook(new Thread(teamManager::closeAll));
 

@@ -53,23 +53,12 @@ public class Agent {
     private final PermissionEngine permissionEngine;
     private final ContextManager contextManager;
 
-    /** 自然结束回调（第 9 章）：模型最终回复无工具调用时触发，用于异步沉淀记忆。 */
-    private volatile Consumer<List<ChatMessage>> onNaturalStop;
+    /** 循环行为参数（白名单/coordinator/迭代上限/hook/自然结束回调）。volatile 字段，
+     *  循环运行中修改当轮生效 —— 见 {@link LoopPolicy}。 */
+    private final LoopPolicy policy = new LoopPolicy();
 
-    /** 工具白名单（第 11 章）：空集 = 不收窄（全工具）；非空 = 仅暴露名单内工具。 */
-    private volatile Set<String> toolWhitelist = Set.of();
-
-    /** 工具名过滤器（第 15 章 coordinator）：null = 不过滤；命中才保留（在每轮 computeSchemas 中生效）。 */
-    private volatile Predicate<String> toolNameFilter;
-
-    /** coordinator 激活判定（第 15 章）：null = 不注入调度指引。 */
-    private volatile Supplier<Boolean> coordinatorActiveFn;
-
-    /** 本轮循环迭代上限（第 13 章）：默认 {@link #MAX_ITERATIONS}，角色 maxTurns 可覆盖。 */
-    private volatile int maxIterations = MAX_ITERATIONS;
-
-    /** Hook 引擎（第 12 章）：可为 null，null 时所有 hook 逻辑跳过。 */
-    private volatile HookEngine hookEngine;
+    /** Handle to the currently running loop thread (for cancel via interrupt). */
+    private volatile Thread runningThread;
 
     public Agent(LlmClient client, ToolRegistry registry, String protocol,
                  PermissionEngine permissionEngine, ContextManager contextManager) {
@@ -80,34 +69,9 @@ public class Agent {
         this.contextManager = contextManager;
     }
 
-    /** 设置自然结束回调；可为 null。 */
-    public void setOnNaturalStop(Consumer<List<ChatMessage>> callback) {
-        this.onNaturalStop = callback;
-    }
-
-    /** 设置工具白名单（第 11 章 F6）；每轮循环开头生效。空集复位为全工具。 */
-    public void setToolWhitelist(Set<String> whitelist) {
-        this.toolWhitelist = whitelist == null ? Set.of() : whitelist;
-    }
-
-    /** 设置工具名过滤器（第 15 章 F7）；null 复位为不过滤。每轮重算 schema 时生效。 */
-    public void setToolNameFilter(Predicate<String> filter) {
-        this.toolNameFilter = filter;
-    }
-
-    /** 设置 coordinator 激活判定（第 15 章 F7）；null 复位为不注入指引。 */
-    public void setCoordinatorActiveFn(Supplier<Boolean> fn) {
-        this.coordinatorActiveFn = fn;
-    }
-
-    /** 设置本轮循环迭代上限（第 13 章）；非正值复位为默认 {@link #MAX_ITERATIONS}。 */
-    public void setMaxIterations(int maxIterations) {
-        this.maxIterations = maxIterations > 0 ? maxIterations : MAX_ITERATIONS;
-    }
-
-    /** 设置 hook 引擎（第 12 章）；可为 null（关闭 hook）。 */
-    public void setHookEngine(HookEngine hookEngine) {
-        this.hookEngine = hookEngine;
+    /** 循环行为参数（直接改字段：{@code agent.policy().setMaxIterations(2)}）。 */
+    public LoopPolicy policy() {
+        return policy;
     }
 
     /** 运行时切换 LLM 客户端（/model 换 provider）；仅在循环空闲时调用。 */
@@ -131,9 +95,6 @@ public class Agent {
      * @param planMode       if true, only read-only tools are exposed
      * @return a blocking queue of AgentEvent for the UI to consume
      */
-    /** Handle to the currently running loop thread (for cancel via interrupt). */
-    private volatile Thread runningThread;
-
     public BlockingQueue<AgentEvent> run(List<ChatMessage> history,
                                          String systemPrompt, boolean planMode) {
         var queue = new LinkedBlockingQueue<AgentEvent>(64);
@@ -180,7 +141,7 @@ public class Agent {
         String earlyStop = null; // 非 null = 因取消/流错误提前退出，不能误报"迭代上限"
 
         try {
-            int cap = maxIterations;
+            int cap = policy.getMaxIterations();
             for (int iter = 1; iter <= cap; iter++) {
 
                 // ── check interrupt ──────────────────────────────────
@@ -193,7 +154,7 @@ public class Agent {
                 final String userMsg = lastUserText(history);
                 ChatMessage hookReminder = null;
                 {
-                    HookEngine he = hookEngine;
+                    HookEngine he = policy.getHookEngine();
                     if (he != null) {
                         List<String> injected = he.runInjectHooks(new HookContext(
                                 HookEvent.TURN_START, null, null, null, null, null));
@@ -234,7 +195,7 @@ public class Agent {
                 // ── coordinator mode: inject dispatch reminder per iteration (F7/N5) ──
                 // 与 planReminder 同款：仅本次 LLM 调用期间可见，调用后移除。
                 ChatMessage coordinatorReminder = null;
-                Supplier<Boolean> coordFn = coordinatorActiveFn;
+                Supplier<Boolean> coordFn = policy.getCoordinatorActiveFn();
                 if (coordFn != null && Boolean.TRUE.equals(coordFn.get())) {
                     coordinatorReminder = new ChatMessage(ChatMessage.Role.USER,
                             "<system-reminder>\n"
@@ -296,7 +257,7 @@ public class Agent {
                     emit(queue, new AgentEvent.LoopComplete(iter));
                     loopCompleted = true;
                     // 第 9 章：自然停下后异步沉淀记忆（回调内部快照 + 开虚拟线程，不阻塞）
-                    Consumer<List<ChatMessage>> cb = onNaturalStop;
+                    Consumer<List<ChatMessage>> cb = policy.getOnNaturalStop();
                     if (cb != null) {
                         cb.accept(history);
                     }
@@ -356,7 +317,7 @@ public class Agent {
             }
 
             // Hit iteration cap
-            String msg = "（已达最大迭代轮数 " + maxIterations + "，自动停止；可继续发消息推进。）";
+            String msg = "（已达最大迭代轮数 " + cap + "，自动停止；可继续发消息推进。）";
             emit(queue, new AgentEvent.ErrorEvent(msg));
             ensureAssistantTail(history, msg);
 
@@ -372,12 +333,12 @@ public class Agent {
     /** 计算本轮工具 schema：plan → 只读；白名单空 → 全量；否则按白名单过滤；
      *  再叠加工具名过滤器（第 15 章 coordinator 收窄）。 */
     private List<Map<String, Object>> computeSchemas(boolean planMode) {
-        Set<String> wl = toolWhitelist;
+        Set<String> wl = policy.getToolWhitelist();
         boolean hasWl = wl != null && !wl.isEmpty();
         List<Map<String, Object>> schemas = planMode
                 ? (hasWl ? registry.getReadOnlySchemas(protocol, wl) : registry.getReadOnlySchemas(protocol))
                 : (hasWl ? registry.getAllSchemas(protocol, wl) : registry.getAllSchemas(protocol));
-        Predicate<String> f = toolNameFilter;
+        Predicate<String> f = policy.getToolNameFilter();
         if (f != null) {
             schemas = schemas.stream().filter(s -> schemaNameMatches(s, f)).toList();
         }
@@ -459,6 +420,8 @@ public class Agent {
 
     private record ToolExecItem(String toolId, String output, boolean isError) {}
 
+    /** 工具调用分批执行：连续 READ 并发、WRITE/COMMAND 串行。返回 completed=false
+     *  表示中途被取消，调用方据此干净收尾（N3/N4）。 */
     private ExecResult executeBatched(List<StreamEvent.ToolCallComplete> calls,
                                       BlockingQueue<AgentEvent> queue)
             throws InterruptedException {
@@ -470,173 +433,190 @@ public class Agent {
             boolean isRead = tool != null && tool.category() == ToolCategory.READ;
 
             if (isRead) {
-                // Gather consecutive READ calls
                 int j = i;
                 while (j < calls.size()) {
                     Tool tj = registry.get(calls.get(j).toolName());
                     if (tj == null || tj.category() != ToolCategory.READ) break;
                     j++;
                 }
-                List<StreamEvent.ToolCallComplete> batch = calls.subList(i, j);
-
-                // Permission pre-check — READ never reaches Ask, so this is fast and
-                // stays off the concurrent path (N3: reads are not serialized).
-                var batchResults = new ToolExecItem[batch.size()];
-                var decisions = new Decision[batch.size()];
-                var hookReject = new String[batch.size()];
-                for (int k = 0; k < batch.size(); k++) {
-                    var c = batch.get(k);
-                    decisions[k] = permissionEngine.decide(
-                            registry.get(c.toolName()), c.arguments());
-                    if (decisions[k].verdict() == Decision.Verdict.DENY) {
-                        batchResults[k] = new ToolExecItem(c.toolId(),
-                                "Error: 权限拒绝: " + decisions[k].reason(), true);
-                        continue;
-                    }
-                    // hook: pre_tool_use 拦截（第 12 章 F5）
-                    hookReject[k] = hookPreCheck(c.toolName(), c.arguments());
-                    if (hookReject[k] != null) {
-                        batchResults[k] = new ToolExecItem(c.toolId(), hookReject[k], true);
-                    }
-                }
-
-                // Emit ToolUseEvent for allowed calls only (in order); denied reads
-                // go straight to their error ToolResultEvent, never "Running…".
-                for (int k = 0; k < batch.size(); k++) {
-                    var c = batch.get(k);
-                    if (decisions[k].verdict() == Decision.Verdict.DENY) continue;
-                    if (hookReject[k] != null) continue;
-                    if (registry.get(c.toolName()) == null) continue;
-                    if (!emit(queue, new AgentEvent.ToolUseEvent(
-                            c.toolId(), c.toolName(), c.arguments()))) {
-                        // Cancelled — fill remaining with cancel markers
-                        for (var remaining : calls.subList(calls.indexOf(c), calls.size())) {
-                            results.add(new ToolExecItem(remaining.toolId(), "（已取消）", true));
-                        }
-                        return new ExecResult(results, false);
-                    }
-                }
-
-                // Concurrent execution of allowed calls
-                try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-                    var futures = new ArrayList<Future<?>>();
-                    for (int k = 0; k < batch.size(); k++) {
-                        final int idx = k;
-                        final var c = batch.get(k);
-                        if (decisions[idx].verdict() == Decision.Verdict.DENY) continue;
-                        if (hookReject[idx] != null) continue;
-                        futures.add(executor.submit(() -> {
-                            if (Thread.currentThread().isInterrupted()) {
-                                batchResults[idx] = new ToolExecItem(c.toolId(), "（已取消）", true);
-                                return;
-                            }
-                            Tool t = registry.get(c.toolName());
-                            long start = System.nanoTime();
-                            ToolResult tr;
-                            if (t == null) {
-                                tr = ToolResult.error("Error: unknown tool '" + c.toolName() + "'");
-                            } else {
-                                try {
-                                    tr = t.execute(c.arguments());
-                                } catch (Exception e) {
-                                    tr = ToolResult.error("Tool execution error: " + e.getMessage());
-                                }
-                            }
-                            double elapsed = (System.nanoTime() - start) / 1_000_000_000.0;
-                            String output = tr.output();
-                            if (tr.isError()) output = "Error: " + output;
-                            batchResults[idx] = new ToolExecItem(c.toolId(), output, tr.isError());
-                            putSafe(queue, new AgentEvent.ToolResultEvent(
-                                    c.toolId(), c.toolName(), output, tr.isError(), elapsed));
-                            // hook: post_tool_use（工具实际执行后）
-                            if (t != null) hookPostFire(c.toolName(), c.arguments(), output, tr.isError());
-                        }));
-                    }
-                    for (var f : futures) {
-                        try { f.get(); } catch (Exception e) { /* logged by tool */ }
-                    }
-                }
-
-                for (int k = 0; k < batch.size(); k++) {
-                    var r = batchResults[k];
-                    if (r == null) {
-                        results.add(new ToolExecItem(batch.get(k).toolId(), "执行失败", true));
-                        continue;
-                    }
-                    results.add(r);
-                    // 被拒/被 hook 拦截的读调用：补发错误事件，让 UI 可见（历史配对按 toolId，不变）
-                    if (decisions[k].verdict() == Decision.Verdict.DENY || hookReject[k] != null) {
-                        putSafe(queue, new AgentEvent.ToolResultEvent(
-                                batch.get(k).toolId(), batch.get(k).toolName(),
-                                r.output(), true, 0));
-                    }
+                if (!runReadBatch(calls.subList(i, j), calls, results, queue)) {
+                    return new ExecResult(results, false);
                 }
                 i = j;
             } else {
-                // Single serial execution (WRITE or COMMAND) — permission gate first
-                Decision decision;
-                try {
-                    decision = permissionEngine.decide(tool, call.arguments());
-                } catch (PermissionCancelledException e) {
-                    // HITL cancelled — fill remaining, end the turn cleanly (N4)
-                    for (var remaining : calls.subList(i, calls.size())) {
-                        results.add(new ToolExecItem(remaining.toolId(), "（已取消）", true));
-                    }
+                if (!runSerialCall(call, calls, i, results, queue)) {
                     return new ExecResult(results, false);
                 }
-
-                if (decision.verdict() == Decision.Verdict.DENY) {
-                    String output = "Error: 权限拒绝: " + decision.reason();
-                    results.add(new ToolExecItem(call.toolId(), output, true));
-                    putSafe(queue, new AgentEvent.ToolResultEvent(
-                            call.toolId(), call.toolName(), output, true, 0));
-                    i++;
-                    continue;
-                }
-
-                // hook: pre_tool_use 拦截（第 12 章 F5）
-                String hookRejectOut = hookPreCheck(call.toolName(), call.arguments());
-                if (hookRejectOut != null) {
-                    results.add(new ToolExecItem(call.toolId(), hookRejectOut, true));
-                    putSafe(queue, new AgentEvent.ToolResultEvent(
-                            call.toolId(), call.toolName(), hookRejectOut, true, 0));
-                    i++;
-                    continue;
-                }
-
-                if (!emit(queue, new AgentEvent.ToolUseEvent(
-                        call.toolId(), call.toolName(), call.arguments()))) {
-                    // Cancelled — fill remaining
-                    for (var remaining : calls.subList(i, calls.size())) {
-                        results.add(new ToolExecItem(remaining.toolId(), "（已取消）", true));
-                    }
-                    return new ExecResult(results, false);
-                }
-
-                Tool t = registry.get(call.toolName());
-                long start = System.nanoTime();
-                ToolResult tr;
-                if (t == null) {
-                    tr = ToolResult.error("Error: unknown tool '" + call.toolName() + "'");
-                } else {
-                    try {
-                        tr = t.execute(call.arguments());
-                    } catch (Exception e) {
-                        tr = ToolResult.error("Tool execution error: " + e.getMessage());
-                    }
-                }
-                double elapsed = (System.nanoTime() - start) / 1_000_000_000.0;
-                String output = tr.output();
-                if (tr.isError()) output = "Error: " + output;
-                results.add(new ToolExecItem(call.toolId(), output, tr.isError()));
-                putSafe(queue, new AgentEvent.ToolResultEvent(
-                        call.toolId(), call.toolName(), output, tr.isError(), elapsed));
-                // hook: post_tool_use（工具实际执行后）
-                if (t != null) hookPostFire(call.toolName(), call.arguments(), output, tr.isError());
                 i++;
             }
         }
         return new ExecResult(results, true);
+    }
+
+    /** 执行一段连续 READ 调用（权限预检 → 并发执行）。返回 false = 中途取消，
+     *  已把剩余调用填为取消标记（N3：读不串行化）。 */
+    private boolean runReadBatch(List<StreamEvent.ToolCallComplete> batch,
+                                 List<StreamEvent.ToolCallComplete> allCalls,
+                                 List<ToolExecItem> results,
+                                 BlockingQueue<AgentEvent> queue)
+            throws InterruptedException {
+
+        // Permission pre-check — READ never reaches Ask, so this is fast and
+        // stays off the concurrent path (N3: reads are not serialized).
+        var batchResults = new ToolExecItem[batch.size()];
+        var decisions = new Decision[batch.size()];
+        var hookReject = new String[batch.size()];
+        for (int k = 0; k < batch.size(); k++) {
+            var c = batch.get(k);
+            decisions[k] = permissionEngine.decide(
+                    registry.get(c.toolName()), c.arguments());
+            if (decisions[k].verdict() == Decision.Verdict.DENY) {
+                batchResults[k] = new ToolExecItem(c.toolId(),
+                        "Error: 权限拒绝: " + decisions[k].reason(), true);
+                continue;
+            }
+            // hook: pre_tool_use 拦截（第 12 章 F5）
+            hookReject[k] = hookPreCheck(c.toolName(), c.arguments());
+            if (hookReject[k] != null) {
+                batchResults[k] = new ToolExecItem(c.toolId(), hookReject[k], true);
+            }
+        }
+
+        // Emit ToolUseEvent for allowed calls only (in order); denied reads
+        // go straight to their error ToolResultEvent, never "Running…".
+        for (int k = 0; k < batch.size(); k++) {
+            var c = batch.get(k);
+            if (decisions[k].verdict() == Decision.Verdict.DENY) continue;
+            if (hookReject[k] != null) continue;
+            if (registry.get(c.toolName()) == null) continue;
+            if (!emit(queue, new AgentEvent.ToolUseEvent(
+                    c.toolId(), c.toolName(), c.arguments()))) {
+                // Cancelled — fill remaining with cancel markers
+                for (var remaining : allCalls.subList(allCalls.indexOf(c), allCalls.size())) {
+                    results.add(new ToolExecItem(remaining.toolId(), "（已取消）", true));
+                }
+                return false;
+            }
+        }
+
+        // Concurrent execution of allowed calls
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var futures = new ArrayList<Future<?>>();
+            for (int k = 0; k < batch.size(); k++) {
+                final int idx = k;
+                final var c = batch.get(k);
+                if (decisions[idx].verdict() == Decision.Verdict.DENY) continue;
+                if (hookReject[idx] != null) continue;
+                futures.add(executor.submit(() -> {
+                    batchResults[idx] = executeTool(c, queue);
+                }));
+            }
+            for (var f : futures) {
+                try { f.get(); } catch (Exception e) { /* logged by tool */ }
+            }
+        }
+
+        for (int k = 0; k < batch.size(); k++) {
+            var r = batchResults[k];
+            if (r == null) {
+                results.add(new ToolExecItem(batch.get(k).toolId(), "执行失败", true));
+                continue;
+            }
+            results.add(r);
+            // 被拒/被 hook 拦截的读调用：补发错误事件，让 UI 可见（历史配对按 toolId，不变）
+            if (decisions[k].verdict() == Decision.Verdict.DENY || hookReject[k] != null) {
+                putSafe(queue, new AgentEvent.ToolResultEvent(
+                        batch.get(k).toolId(), batch.get(k).toolName(),
+                        r.output(), true, 0));
+            }
+        }
+        return true;
+    }
+
+    /** 串行执行单个 WRITE/COMMAND 调用（权限门 → hook → 执行）。
+     *  返回 false = 被取消，剩余调用已填为取消标记（N4）。 */
+    private boolean runSerialCall(StreamEvent.ToolCallComplete call,
+                                  List<StreamEvent.ToolCallComplete> allCalls,
+                                  int index,
+                                  List<ToolExecItem> results,
+                                  BlockingQueue<AgentEvent> queue)
+            throws InterruptedException {
+
+        Tool tool = registry.get(call.toolName());
+
+        // Single serial execution (WRITE or COMMAND) — permission gate first
+        Decision decision;
+        try {
+            decision = permissionEngine.decide(tool, call.arguments());
+        } catch (PermissionCancelledException e) {
+            // HITL cancelled — fill remaining, end the turn cleanly (N4)
+            fillCancelled(allCalls, index, results);
+            return false;
+        }
+
+        if (decision.verdict() == Decision.Verdict.DENY) {
+            String output = "Error: 权限拒绝: " + decision.reason();
+            results.add(new ToolExecItem(call.toolId(), output, true));
+            putSafe(queue, new AgentEvent.ToolResultEvent(
+                    call.toolId(), call.toolName(), output, true, 0));
+            return true;
+        }
+
+        // hook: pre_tool_use 拦截（第 12 章 F5）
+        String hookRejectOut = hookPreCheck(call.toolName(), call.arguments());
+        if (hookRejectOut != null) {
+            results.add(new ToolExecItem(call.toolId(), hookRejectOut, true));
+            putSafe(queue, new AgentEvent.ToolResultEvent(
+                    call.toolId(), call.toolName(), hookRejectOut, true, 0));
+            return true;
+        }
+
+        if (!emit(queue, new AgentEvent.ToolUseEvent(
+                call.toolId(), call.toolName(), call.arguments()))) {
+            // Cancelled — fill remaining
+            fillCancelled(allCalls, index, results);
+            return false;
+        }
+
+        ToolExecItem item = executeTool(call, queue);
+        results.add(item);
+        return true;
+    }
+
+    /** 执行单个工具调用并发送结果事件；中断/异常都归一为 ToolExecItem（并发与串行共用）。 */
+    private ToolExecItem executeTool(StreamEvent.ToolCallComplete call,
+                                     BlockingQueue<AgentEvent> queue) {
+        if (Thread.currentThread().isInterrupted()) {
+            return new ToolExecItem(call.toolId(), "（已取消）", true);
+        }
+        Tool t = registry.get(call.toolName());
+        long start = System.nanoTime();
+        ToolResult tr;
+        if (t == null) {
+            tr = ToolResult.error("Error: unknown tool '" + call.toolName() + "'");
+        } else {
+            try {
+                tr = t.execute(call.arguments());
+            } catch (Exception e) {
+                tr = ToolResult.error("Tool execution error: " + e.getMessage());
+            }
+        }
+        double elapsed = (System.nanoTime() - start) / 1_000_000_000.0;
+        String output = tr.output();
+        if (tr.isError()) output = "Error: " + output;
+        putSafe(queue, new AgentEvent.ToolResultEvent(
+                call.toolId(), call.toolName(), output, tr.isError(), elapsed));
+        // hook: post_tool_use（工具实际执行后）
+        if (t != null) hookPostFire(call.toolName(), call.arguments(), output, tr.isError());
+        return new ToolExecItem(call.toolId(), output, tr.isError());
+    }
+
+    /** 把 index 起的剩余调用全部填为取消标记。 */
+    private static void fillCancelled(List<StreamEvent.ToolCallComplete> calls, int index,
+                                      List<ToolExecItem> results) {
+        for (var remaining : calls.subList(index, calls.size())) {
+            results.add(new ToolExecItem(remaining.toolId(), "（已取消）", true));
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -655,14 +635,14 @@ public class Agent {
     /** 触发非拦截类事件；hookEngine 为 null 时跳过。 */
     private void fireHook(HookEvent event, String toolName, Map<String, Object> args,
                           String filePath, String message, String error) {
-        HookEngine he = hookEngine;
+        HookEngine he = policy.getHookEngine();
         if (he == null) return;
         he.runHooks(new HookContext(event, toolName, args, filePath, message, error));
     }
 
     /** pre_tool_use 拦截检查；命中返回拒绝输出，否则 null。 */
     private String hookPreCheck(String toolName, Map<String, Object> args) {
-        HookEngine he = hookEngine;
+        HookEngine he = policy.getHookEngine();
         if (he == null) return null;
         PreToolResult pre = he.runPreToolHooks(toolName, args);
         return pre.rejected() ? ("Error: Hook 拦截: " + pre.message()) : null;
@@ -670,7 +650,7 @@ public class Agent {
 
     /** post_tool_use 触发（工具实际执行后）。 */
     private void hookPostFire(String toolName, Map<String, Object> args, String output, boolean isError) {
-        HookEngine he = hookEngine;
+        HookEngine he = policy.getHookEngine();
         if (he == null) return;
         he.runHooks(new HookContext(HookEvent.POST_TOOL_USE, toolName, args,
                 HookContext.filePathOf(args), output, isError ? "error" : null));
