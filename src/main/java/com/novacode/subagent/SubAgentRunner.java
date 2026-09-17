@@ -115,11 +115,15 @@ public final class SubAgentRunner {
                 return new RunResult.Done(acc.failed("Interrupted"));
             }
             if (evt == null) {
-                if (deadline > 0 && System.nanoTime() >= deadline) {
-                    if (detachOnTimeout) {
-                        return new RunResult.Detached(new Continuation(queue, acc), acc.timedOut());
+                if (deadline > 0) {
+                    if (System.nanoTime() >= deadline) {
+                        if (detachOnTimeout) {
+                            return new RunResult.Detached(new Continuation(queue, acc), acc.timedOut());
+                        }
+                        return new RunResult.Done(acc.failed("timeout after " + timeoutSeconds + "s"));
                     }
-                    return new RunResult.Done(acc.failed("timeout after " + timeoutSeconds + "s"));
+                    // pollWaitMs 截断可能在 deadline 前零点几毫秒返回 —— 未到点继续等
+                    continue;
                 }
                 return new RunResult.Done(acc.failed("timeout waiting for events"));
             }

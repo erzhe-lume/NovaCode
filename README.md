@@ -50,7 +50,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 | JSON / YAML | Jackson databind + dataformat-yaml |
 | Markdown 渲染 | CommonMark-Java |
 | 构建 | Maven（shade 打包可执行 jar） |
-| 测试 | JUnit 5（196 个单元测试，含 Agent 循环端到端与 SSE 协议解析测试，`mvn test`） |
+| 测试 | JUnit 5（205 个单元测试，含 Agent 循环端到端与 SSE 协议解析测试，`mvn test`） |
 
 ## 🚀 快速开始
 
