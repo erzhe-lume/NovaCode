@@ -1175,14 +1175,23 @@ public class ChatModel implements Model, PermissionPrompter, CommandContext {
     /**
      * 缓存命中率日志（默认关闭）：设 NOVACODE_CACHE_LOG=1 开启，每完成一轮追加一行到
      * nova_cache.log，用于验证 prompt caching 生效（第 2 轮起 cacheRead 应 > 0）。
+     * 记录 promptTokens（分母）与按协议口径算出的 hitRate，命中率才可被独立复算——
+     * 只记 cacheRead 是算不出百分比的。
      */
     private void writeCacheSmokeLog() {
         String flag = System.getenv("NOVACODE_CACHE_LOG");
         if (!"1".equals(flag) && !"true".equalsIgnoreCase(flag)) return;
+        long denom = "anthropic".equals(config.getProtocol())
+                ? (long) totalInputTokens + totalCacheRead + totalCacheWrite
+                : (long) totalInputTokens;
+        String rate = denom <= 0 ? "n/a"
+                : String.format("%.1f%%", 100.0 * totalCacheRead / denom);
         String line = "[nova_cache] " + LocalDateTime.now()
                 + " model=" + config.getModel()
+                + " promptTokens=" + totalInputTokens
                 + " cacheRead=" + totalCacheRead
-                + " cacheWrite=" + totalCacheWrite + "\n";
+                + " cacheWrite=" + totalCacheWrite
+                + " hitRate=" + rate + "\n";
         try {
             Files.writeString(Path.of("nova_cache.log"), line,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
