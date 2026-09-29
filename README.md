@@ -6,7 +6,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 
 区别于"聊天机器人"，NovaCode 具备真实的工具执行能力，并通过分层架构覆盖了 Coding Agent 的核心工程问题：**安全（五层权限）、成本（上下文两层压缩 + Prompt 缓存）、记忆（跨会话自动沉淀）、扩展（Slash / Skill / Hook / MCP）、协作（SubAgent + Git Worktree + Agent Teams）**。
 
-项目规模：**128 个主源文件（约 1.2 万行）+ 26 个测试文件（206 个用例）/ 24 个包**，不依赖任何 Agent 框架。
+项目规模：**128 个主源文件（非空行约 1.2 万）+ 26 个测试文件（207 个用例）/ 21 个包**，不依赖任何 Agent 框架。
 
 ---
 
@@ -21,7 +21,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 
 **工具与安全**
 
-- **Function Calling 工具系统**：7 个内置工具（ReadFile / WriteFile / EditFile / Bash / Glob / Grep / TodoWrite）+ MCP 远程工具统一注册；READ 并发批次 / WRITE+COMMAND 串行的分批执行（虚拟线程）。
+- **Function Calling 工具系统**：7 个基础内置工具（ReadFile / WriteFile / EditFile / Bash / Glob / Grep / TodoWrite），运行时另注册 9 个协作与调度工具（Agent / SendMessage / Team×2 / Task×5 / TaskStop），再加上 Skill 与 MCP 动态注册——模型实际可见的工具面 ≥16 个；READ 并发批次 / WRITE+COMMAND 串行的分批执行（虚拟线程）。
 - **五层权限拦截**：黑名单 → 路径沙箱 → 三级规则引擎 → 权限模式 → 人工确认（HITL），deny 恒优先、短路返回；子 Agent 无人在回路时确认自动降级为拒绝（安全默认）。
 - **读后才能改**：FileStateCache 记录读取时的 mtime，文件被外部修改后拒绝基于过期视图的编辑。
 - **编码自适应**：文件与进程输出按"严格 UTF-8 失败降级 GBK"探测解码，EditFile 写回保持原编码与 BOM——中文 Windows 环境不乱码。
@@ -33,9 +33,9 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 - **会话管理**：JSONL 追加式存档（崩溃安全、孤儿调用截断），启动自动恢复，`/resume <id前缀>` 切换历史会话、`/session rm` 删除。
 - **输入历史**：↑ 键回溯，持久化到 `~/.mewcode/prompt_history.jsonl`，跨会话可用。
 - **Markdown TUI 渲染**：代码块 / 标题 / 列表 / 行内代码 / 链接的 ANSI 样式化输出（CommonMark AST → 平铺 span），流式阶段尾部跟随预览。
-- **扩展机制**：Slash 命令、Skill（行为可插拔）、Hook（15 个生命周期事件）、MCP（工具可插拔）。
+- **扩展机制**：Slash 命令（15 个）、Skill（行为可插拔）、Hook（9 个生命周期事件：四层生命周期 + 系统级）、MCP（工具可插拔）。
 - **多 Agent 协作**：SubAgent 委派（上下文隔离）→ Git Worktree 文件隔离 → Agent Teams 协作（邮箱通信 + Coordinator 统筹调度）。
-- **Elm 架构 TUI**：纯函数状态转移（Model / Message / UpdateResult），比命令式渲染更可控。
+- **Elm 架构 TUI**：消息驱动的状态机（Model / Message / UpdateResult + Program 事件循环），比命令式渲染更可控。
 
 ## 🏗 架构
 
@@ -53,13 +53,16 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 └─────────────────────────────────────────┘
 ```
 
-- 5 层划分、每层独立可替换：加 MCP / Hook / Teams 时，Agent 核心循环一行未改。
+- 5 层划分、每层独立可替换。**准确地说**：接入 MCP 完全没有触及 Agent 循环（工具在注册表层接入）；Hook 与 Teams 则在循环既有的挂点上扩展——事件回调、工具白名单过滤、每轮提醒注入——没有改动循环本身的控制流与停止条件。
 - 关键约束：系统提示 = 字节级稳定前缀 + 易变后缀（缓存根基）；工具调用与结果必须成对（协议约束）；deny 在任意层短路（安全约束）。
 
 ## 📚 开发历程（15 章 · 13 个里程碑）
 
-项目不是一次性写完的，而是从"纯对话闭环"出发、按章节逐层加厚，每一阶段都有独立的
-**spec → plan → task → checklist** 闭环存档在 [`docs/milestones/`](docs/milestones/)：
+项目不是一次性写完的，而是从"纯对话闭环"出发、按章节逐层加厚，全过程存档在
+[`docs/milestones/`](docs/milestones/)。**ch03 之后每个里程碑都是完整的
+spec → plan → task → checklist 四件套**；最早的 ch01–03 是阶段档案，保留的是
+requirements / architecture / config-and-protocol / acceptance-criteria，
+ch04 只有 plan / task / checklist（当时还未引入先写 spec 的流程）：
 
 | 里程碑 | 章节 | 主题 |
 |--------|------|------|
@@ -77,8 +80,12 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 | [12-worktree](docs/milestones/12-worktree/) | ch14 | Git Worktree 文件隔离 |
 | [13-agent-teams](docs/milestones/13-agent-teams/) | ch15 | Agent Teams（邮箱 + Coordinator） |
 
-> ⚠️ `01-foundation` 是**阶段档案**，保留当时状态（其中的类名与"不做的事"清单不代表项目现状），
-> 已在文档顶部标注范围声明。当前状态以本 README 为准。
+> ⚠️ 两点阅读提示：
+> ① `01-foundation` 是**阶段档案**，保留当时状态（其中的类名与"不做的事"清单不代表项目现状），
+> 已在文档顶部标注范围声明；当前状态以本 README 为准。
+> ② 各章 `checklist.md` 里的验收记录引用了一批 `SmokeNN.java` 无头冒烟脚本。它们是**开发期的本地验证工具**，
+> 当时放在 `target/smoke/` 下（`target/` 已被 gitignore），因此未随仓库发布、现已不可复核——
+> 验收结论本身是当时真实跑出来的，但这些脚本不是可交付物。当前可复核的验证手段是 `src/test/` 下的 26 个测试类。
 
 ## 🛠 技术栈
 
@@ -90,7 +97,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 | JSON / YAML | Jackson databind + dataformat-yaml |
 | Markdown 渲染 | CommonMark-Java |
 | 构建 | Maven（shade 打包可执行 jar） |
-| 测试 / CI | JUnit 5（206 个用例，`mvn test`）+ GitHub Actions（windows-latest，push 与 PR 触发） |
+| 测试 / CI | JUnit 5（207 个用例，`mvn test`）+ GitHub Actions（windows-latest，push 与 PR 触发） |
 
 ## 🚀 快速开始
 
@@ -153,7 +160,7 @@ MCP 服务器可配置在同一文件的 `mcp_servers` 段（用户级 `~/.novac
 ## 🧪 测试
 
 ```bash
-mvn test    # 206 个用例
+mvn test    # 207 个用例
 ```
 
 覆盖：**Agent Loop 端到端**（脚本化 FakeClient 驱动真实循环：自然停止 / 工具结果回流 / 权限拒绝 / 迭代上限 / 并发批次 / Hook 注入与拦截）、协议层消息构建与 SSE 解析、上下文压缩边界对齐、工具层（编码往返 / replace_all / 截断续读 / 输出模式）、五层权限语义、会话存档与恢复、SubAgent 编排、Markdown 渲染、Prompt 缓存前缀一致性。测试驱动修复了 ANSI 注入防御失效、超时边界竞态、孤儿进程树等 7+ 个深层缺陷。
