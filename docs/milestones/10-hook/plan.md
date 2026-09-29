@@ -168,7 +168,7 @@ project/
 │   ├── agent/Agent.java                   # 修改：hookEngine 字段 + 生命周期触发 + 工具前拦截
 │   └── ui/ChatModel.java                  # 修改：建引擎 + 会话/退出事件 + 会话注入
 ├── target/smoke/Smoke12.java              # 新增：无头冒烟（独立于生产，验证后）
-└── docs/I/{spec,plan,task,checklist}.md   # 本章文档
+└── docs/milestones/10-hook/{spec,plan,task,checklist}.md   # 本章文档
 ```
 
 配置文件（运行期）：`~/.novacode/hooks.yaml`（用户级）、`.novacode/hooks.yaml`（项目级）。

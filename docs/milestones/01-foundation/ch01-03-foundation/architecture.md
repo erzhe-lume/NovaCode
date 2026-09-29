@@ -1,4 +1,10 @@
-# NovaCode — 架构设计
+# NovaCode — 架构设计（第 1–3 章 · 阶段档案）
+
+> **⚠️ 范围声明：本文档是项目第一阶段（ch01–ch03）的架构设计，忠实保留当时状态。**
+>
+> 下方"项目结构"列出的 `AnthropicAdapter` / `OpenAiAdapter` / `TerminalUI` / `ChatHistory` 等类
+> 是当时的形态，现已演进为 `AnthropicClient` / `OpenAiCompatClient` / `tui.Program` / `session.*`。
+> 五层架构的**分层思想沿用至今**，但当前实现细节请以根目录 `README.md` 为准。
 
 ## 技术选型
 

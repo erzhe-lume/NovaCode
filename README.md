@@ -6,7 +6,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 
 区别于"聊天机器人"，NovaCode 具备真实的工具执行能力，并通过分层架构覆盖了 Coding Agent 的核心工程问题：**安全（五层权限）、成本（上下文两层压缩 + Prompt 缓存）、记忆（跨会话自动沉淀）、扩展（Slash / Skill / Hook / MCP）、协作（SubAgent + Git Worktree + Agent Teams）**。
 
-项目规模：**128 个主源文件（1.4 万行）+ 26 个测试文件（205 个用例）/ 19 个包**，不依赖任何 Agent 框架。
+项目规模：**128 个主源文件（约 1.2 万行）+ 26 个测试文件（205 个用例）/ 24 个包**，不依赖任何 Agent 框架。
 
 ---
 
@@ -39,6 +39,10 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 
 ## 🏗 架构
 
+![NovaCode 架构](docs/novacode-architecture.visual-check.2048x1320.light.png)
+
+交互式版本：[架构图](docs/novacode-architecture.html) · [执行流程图](docs/novacode-workflow.html)（浏览器打开）
+
 ```
 ┌─────────────────────────────────────────┐
 │ 交互层   tui/tea · command · ui          │  TEA 终端界面、Slash 命令、ChatModel
@@ -51,6 +55,30 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 
 - 5 层划分、每层独立可替换：加 MCP / Hook / Teams 时，Agent 核心循环一行未改。
 - 关键约束：系统提示 = 字节级稳定前缀 + 易变后缀（缓存根基）；工具调用与结果必须成对（协议约束）；deny 在任意层短路（安全约束）。
+
+## 📚 开发历程（15 章 · 13 个里程碑）
+
+项目不是一次性写完的，而是从"纯对话闭环"出发、按章节逐层加厚，每一阶段都有独立的
+**spec → plan → task → checklist** 闭环存档在 [`docs/milestones/`](docs/milestones/)：
+
+| 里程碑 | 章节 | 主题 |
+|--------|------|------|
+| [01-foundation](docs/milestones/01-foundation/) | ch01–03 | 多协议 LLM 客户端 + 流式 TUI（纯对话闭环） |
+| [02-agent-loop](docs/milestones/02-agent-loop/) | ch04 | ReAct Agent Loop |
+| [03-prompt-engineering](docs/milestones/03-prompt-engineering/) | ch05 | 系统提示工程化（稳定前缀设计） |
+| [04-permission](docs/milestones/04-permission/) | ch06 | 五层权限系统 |
+| [05-mcp](docs/milestones/05-mcp/) | ch07 | MCP 客户端接入 |
+| [06-context](docs/milestones/06-context/) | ch08 | 上下文管理（落盘 + 摘要双层压缩） |
+| [07-memory-session](docs/milestones/07-memory-session/) | ch09 | 记忆与会话持久化 |
+| [08-command](docs/milestones/08-command/) | ch10 | Slash 命令注册与分发 |
+| [09-skill](docs/milestones/09-skill/) | ch11 | Skill 系统 |
+| [10-hook](docs/milestones/10-hook/) | ch12 | Hook 生命周期引擎 |
+| [11-subagent](docs/milestones/11-subagent/) | ch13 | 子 Agent 委派（上下文隔离） |
+| [12-worktree](docs/milestones/12-worktree/) | ch14 | Git Worktree 文件隔离 |
+| [13-agent-teams](docs/milestones/13-agent-teams/) | ch15 | Agent Teams（邮箱 + Coordinator） |
+
+> ⚠️ `01-foundation` 是**阶段档案**，保留当时状态（其中的类名与"不做的事"清单不代表项目现状），
+> 已在文档顶部标注范围声明。当前状态以本 README 为准。
 
 ## 🛠 技术栈
 

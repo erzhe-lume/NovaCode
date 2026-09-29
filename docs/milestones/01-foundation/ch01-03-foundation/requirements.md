@@ -1,4 +1,17 @@
-# NovaCode — 需求规格说明
+# NovaCode — 需求规格说明（第 1–3 章 · 阶段档案）
+
+> **⚠️ 范围声明：本文档是项目第一阶段（ch01–ch03）的原始规格，忠实保留当时状态，未随后续演进回改。**
+>
+> 后续章节（ch04–ch15）在此之上逐层扩展，分别见同级的 `02-agent-loop` 至 `13-agent-teams` 目录。
+>
+> 阅读时必须注意以下表述**只代表当时**，不代表项目现状：
+>
+> | 本文档中的表述 | 项目现状 |
+> |---|---|
+> | 类名 `AnthropicAdapter` / `OpenAiAdapter` / `TerminalUI` / `ChatScreen` / `ChatHistory` / `SelectorScreen` | 已演进为 `AnthropicClient` / `OpenAiCompatClient` / `tui.Program` / `ui.ChatModel` 等，见 `src/main/java/com/novacode/` |
+> | 文末"不做的事"列出：无工具调用 / 无权限系统 / 无上下文压缩 / 无会话持久化 / 无自动重试 / 无流式中断 | **均已在后续章节实现并有测试覆盖**——当前状态的唯一依据是根目录 `README.md` |
+>
+> 保留这批文档的用途：证明项目是分阶段增量演进（ch01 → ch15），每一阶段都有独立的 spec / plan / task / checklist 闭环。
 
 ## 背景
 

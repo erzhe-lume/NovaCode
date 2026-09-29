@@ -31,6 +31,10 @@ launch.bat
 launch_direct.bat
 test_launch.bat
 
+# ── 个人面试准备笔记（本地保留，不公开）─────────
+docs/interview-prep.md
+.workbuddy/
+
 # ── OS junk ──────────────────────────────────
 .DS_Store
 Thumbs.db
