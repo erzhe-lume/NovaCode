@@ -6,7 +6,7 @@ NovaCode 是一个 **Coding Agent / Terminal AI Assistant**：你用自然语言
 
 区别于"聊天机器人"，NovaCode 具备真实的工具执行能力，并通过分层架构覆盖了 Coding Agent 的核心工程问题：**安全（五层权限）、成本（上下文两层压缩 + Prompt 缓存）、记忆（跨会话自动沉淀）、扩展（Slash / Skill / Hook / MCP）、协作（SubAgent + Git Worktree + Agent Teams）**。
 
-项目规模：**128 个主源文件（非空行约 1.2 万）+ 26 个测试文件（207 个用例）/ 21 个包**，不依赖任何 Agent 框架。
+项目规模：**128 个主源文件（非空行约 1.2 万）+ 26 个测试类 / 21 个包**，测试用例 200+，不依赖任何 Agent 框架。
 
 ---
 
@@ -97,7 +97,7 @@ ch04 只有 plan / task / checklist（当时还未引入先写 spec 的流程）
 | JSON / YAML | Jackson databind + dataformat-yaml |
 | Markdown 渲染 | CommonMark-Java |
 | 构建 | Maven（shade 打包可执行 jar） |
-| 测试 / CI | JUnit 5（207 个用例，`mvn test`）+ GitHub Actions（windows-latest，push 与 PR 触发） |
+| 测试 / CI | JUnit 5（200+ 用例，`mvn test`）+ GitHub Actions（windows-latest，push 与 PR 触发） |
 
 ## 🚀 快速开始
 
@@ -160,7 +160,7 @@ MCP 服务器可配置在同一文件的 `mcp_servers` 段（用户级 `~/.novac
 ## 🧪 测试
 
 ```bash
-mvn test    # 207 个用例
+mvn test    # 跑全套单元测试
 ```
 
 覆盖：**Agent Loop 端到端**（脚本化 FakeClient 驱动真实循环：自然停止 / 工具结果回流 / 权限拒绝 / 迭代上限 / 并发批次 / Hook 注入与拦截）、协议层消息构建与 SSE 解析、上下文压缩边界对齐、工具层（编码往返 / replace_all / 截断续读 / 输出模式）、五层权限语义、会话存档与恢复、SubAgent 编排、Markdown 渲染、Prompt 缓存前缀一致性。测试驱动修复了 ANSI 注入防御失效、超时边界竞态、孤儿进程树等 7+ 个深层缺陷。
