@@ -4,7 +4,11 @@ import com.novacode.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -75,6 +79,31 @@ class ToolsTest {
         ToolResult result = r.execute(Map.of("file_path", "gbk.txt"));
 
         assertTrue(result.output().contains("中文内容测试"), "GBK 文件应正确解码: " + result.output());
+    }
+
+    /**
+     * decodeBytes 是无编码保证字节流（命令输出）的解码入口，其两条分支必须各自确定性覆盖。
+     * 不能用"让 cmd 输出中文"来间接覆盖：子进程的实际输出编码取决于宿主控制台代码页与
+     * 参数编组代码页，在非 CJK 环境（如 CI 的 1252）会退化为只走 UTF-8 分支，
+     * 使降级路径静默失去覆盖。
+     */
+    @Test
+    void decodeBytesHandlesUtf8ThenFallsBackToGbk() {
+        // UTF-8 合法字节 → 走严格 UTF-8 分支
+        byte[] utf8 = "中文内容测试".getBytes(StandardCharsets.UTF_8);
+        assertEquals("中文内容测试", ReadFileTool.decodeBytes(utf8), "合法 UTF-8 应直接解码");
+
+        // 真实 GBK 字节 → 严格 UTF-8 解码必然失败 → 走 GBK 降级分支
+        byte[] gbk = "中文内容测试".getBytes(Charset.forName("GBK"));
+        assertThrows(CharacterCodingException.class, () -> StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .decode(ByteBuffer.wrap(gbk)),
+                "前置条件：该 GBK 字节序列应当无法通过严格 UTF-8 解码");
+        assertEquals("中文内容测试", ReadFileTool.decodeBytes(gbk), "GBK 字节应降级解码而不乱码");
+
+        // 纯 ASCII 两条分支都安全
+        assertEquals("plain", ReadFileTool.decodeBytes("plain".getBytes(StandardCharsets.US_ASCII)));
     }
 
     // ── EditFile ─────────────────────────────────────────────────────
