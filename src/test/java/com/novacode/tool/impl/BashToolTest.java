@@ -4,6 +4,9 @@ import com.novacode.tool.ToolResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -29,11 +32,17 @@ class BashToolTest {
     @Test
     void chineseOutputDecodesWithoutMojibake() {
         assumeTrue(windows());
-        // 显式把子进程控制台代码页切到 UTF-8：本用例验证的是"UTF-8 输出能被正确解码"，
-        // 不应依赖宿主 runner 的默认代码页（GitHub Actions 的 Windows runner 是 OEM 437，
-        // 既非 UTF-8 也非 GBK，输出落在探测链之外，会产生环境相关的假失败）。
-        // 真实运行环境同理——launch.bat 也先执行 chcp 65001。
-        ToolResult result = bash().execute(Map.of("command", "chcp 65001 >nul && echo 中文输出测试"));
+        // 被测的是"子进程输出的中文能被正确解码"这一条解码链，而不是参数编组。
+        // 因此中文必须由子进程自己读文件产生，不能作为命令参数传入：
+        // Windows 创建进程时命令行参数按系统 ANSI 代码页编组，在 ANSI 代码页非 CJK 的
+        // 环境（如 GitHub Actions 的 windows-latest，1252）中文会在进程启动前就被
+        // 替换成 '?'，此时被测代码永远拿不到原文——那是环境的限制，不是解码缺陷。
+        try {
+            Files.writeString(dir.resolve("cn.txt"), "中文输出测试", StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            fail("准备测试文件失败: " + e.getMessage());
+        }
+        ToolResult result = bash().execute(Map.of("command", "type cn.txt"));
         assertFalse(result.isError(), result.output());
         assertTrue(result.output().contains("中文输出测试"), "中文不应乱码: " + result.output().trim());
     }
