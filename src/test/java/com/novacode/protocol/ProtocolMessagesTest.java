@@ -113,6 +113,23 @@ class ProtocolMessagesTest {
         assertFalse(body.contains("\"tools\""), "空工具列表不应输出 tools 字段");
     }
 
+    @Test
+    void openAiBodyRequestsUsageInStream() throws Exception {
+        var cfg = new ProviderConfig("t", "openai-compat", "sk-test", "m",
+                "https://api.example.com", false);
+        var client = new OpenAiCompatClient(cfg, "sys");
+        var history = List.of(new ChatMessage(ChatMessage.Role.USER, "hi"));
+
+        String body = client.buildRequestBody(history, null, List.of());
+
+        // 流式响应默认不返回 usage：必须在请求体显式开启 stream_options.include_usage，
+        // 服务端才会在流末尾补一个 choices 为空数组的收尾块。缺了它，官方 OpenAI 端点
+        // 不会返回 token 用量，缓存命中率与 token 锚定估算都会失去数据来源。
+        assertTrue(body.contains("\"stream_options\""), "应请求流式 usage");
+        assertTrue(body.contains("\"include_usage\":true"), "include_usage 应为 true");
+        assertTrue(body.contains("\"stream\":true"), "仍应是流式请求");
+    }
+
     // ── retryableStatus：瞬态错误判定 ────────────────────────────────
 
     @Test

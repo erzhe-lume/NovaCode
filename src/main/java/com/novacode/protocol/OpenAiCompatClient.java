@@ -284,6 +284,13 @@ public class OpenAiCompatClient implements LlmClient {
         root.put("model", model);
         root.put("stream", true);
         root.put("max_tokens", maxTokens);
+        // 流式响应默认不返回 usage，需显式开启：服务端会在流末尾补一个
+        // choices 为空数组的收尾块携带 usage（见 handleSseData 中对空 choices 的处理）。
+        // 不设置则拿不到 token 用量，命中率与上下文估算都失去锚点。
+        // 注：DeepSeek 等兼容端点不设也会返回，显式设置对官方 OpenAI 端点是必需的。
+        ObjectNode streamOptions = MAPPER.createObjectNode();
+        streamOptions.put("include_usage", true);
+        root.set("stream_options", streamOptions);
 
         ArrayNode msgs = MAPPER.createArrayNode();
         if (prompt != null && !prompt.isBlank()) {
