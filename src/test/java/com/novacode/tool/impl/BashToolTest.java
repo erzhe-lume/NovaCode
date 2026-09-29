@@ -29,7 +29,11 @@ class BashToolTest {
     @Test
     void chineseOutputDecodesWithoutMojibake() {
         assumeTrue(windows());
-        ToolResult result = bash().execute(Map.of("command", "echo 中文输出测试"));
+        // 显式把子进程控制台代码页切到 UTF-8：本用例验证的是"UTF-8 输出能被正确解码"，
+        // 不应依赖宿主 runner 的默认代码页（GitHub Actions 的 Windows runner 是 OEM 437，
+        // 既非 UTF-8 也非 GBK，输出落在探测链之外，会产生环境相关的假失败）。
+        // 真实运行环境同理——launch.bat 也先执行 chcp 65001。
+        ToolResult result = bash().execute(Map.of("command", "chcp 65001 >nul && echo 中文输出测试"));
         assertFalse(result.isError(), result.output());
         assertTrue(result.output().contains("中文输出测试"), "中文不应乱码: " + result.output().trim());
     }
